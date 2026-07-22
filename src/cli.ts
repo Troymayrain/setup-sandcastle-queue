@@ -80,6 +80,11 @@ import {
   evaluateCredentiallessFixtureMatrix,
   readCredentiallessFixtureMatrixInput,
 } from "./ci/fixture-matrix.js";
+import {
+  createReleaseSourceManifest,
+  evaluateReleaseBundleGate,
+  readReleaseBundleGateInput,
+} from "./release/bundle.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -804,6 +809,42 @@ async function main(): Promise<void> {
     }
     const input = await readLiveE2EReleaseGateInput(inputPath);
     const result = evaluateLiveE2EReleaseGate(input);
+    writeJson({ command, ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 4;
+    return;
+  }
+
+  if (command === "release-source-manifest") {
+    const candidateSha = optionValue("--candidate-sha");
+    if (!candidateSha || !/^[a-f0-9]{40}$/u.test(candidateSha)) {
+      throw new ConfigurationError([
+        {
+          code: "RELEASE_CANDIDATE_INVALID",
+          message:
+            "release-source-manifest requires --candidate-sha <40-hex-sha>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = createReleaseSourceManifest(candidateSha);
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "verify-release-bundle") {
+    const inputPath = optionValue("--input");
+    if (!inputPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-release-bundle requires --input <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const input = await readReleaseBundleGateInput(inputPath);
+    const result = evaluateReleaseBundleGate(input);
     writeJson({ command, ok: result.ok, result, version: VERSION });
     process.exitCode = result.ok ? 0 : 4;
     return;

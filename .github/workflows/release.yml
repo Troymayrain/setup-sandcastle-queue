@@ -1,0 +1,398 @@
+name: Publish one Sandcastle Queue release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character commit to release
+        required: true
+        type: string
+      confirm_candidate_sha:
+        description: Repeat the exact candidate commit
+        required: true
+        type: string
+      release_tag:
+        description: Exact SemVer tag shared by every distribution
+        required: true
+        type: string
+      confirm_release_tag:
+        description: Repeat the exact SemVer tag
+        required: true
+        type: string
+      credentialless_run_id:
+        description: Successful CI run containing candidate-bound fixture evidence
+        required: true
+        type: string
+      live_e2e_run_id:
+        description: Successful manual run containing candidate-bound live evidence
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    name: Authorize the immutable tag and candidate
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      candidate_sha: ${{ steps.authorize.outputs.candidate_sha }}
+      release_tag: ${{ steps.authorize.outputs.release_tag }}
+    steps:
+      - name: Require a maintainer, one existing tag, and matching package SemVer
+        id: authorize
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CONFIRM_CANDIDATE_SHA: ${{ inputs.confirm_candidate_sha }}
+          CONFIRM_RELEASE_TAG: ${{ inputs.confirm_release_tag }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ || "$CANDIDATE_SHA" != "$CONFIRM_CANDIDATE_SHA" ]]; then
+            exit 2
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$RELEASE_TAG" != "$CONFIRM_RELEASE_TAG" ]]; then
+            exit 2
+          fi
+          actor_permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)"
+          if [[ "$actor_permission" != "admin" && "$actor_permission" != "maintain" ]]; then
+            exit 2
+          fi
+          tagged_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
+          if [[ "$tagged_sha" != "$CANDIDATE_SHA" ]]; then
+            exit 2
+          fi
+          package_version="$(gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${CANDIDATE_SHA}" --jq .content | base64 --decode | jq -r .version)"
+          if [[ "$package_version" != "$RELEASE_TAG" ]]; then
+            exit 2
+          fi
+          printf 'candidate_sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  release-gate:
+    name: Build and verify every candidate distribution without release credentials
+    needs: authorize
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the exact tagged candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.authorize.outputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+
+      - name: Build and test the exact source candidate
+        run: npm ci --ignore-scripts && npm run typecheck && npm test
+
+      - name: Download only the named prerequisite gate reports
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          CREDENTIALLESS_RUN_ID: ${{ inputs.credentialless_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          LIVE_E2E_RUN_ID: ${{ inputs.live_e2e_run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CREDENTIALLESS_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$LIVE_E2E_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            exit 2
+          fi
+          credentialless_run="$(gh run view "$CREDENTIALLESS_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,name)"
+          live_run="$(gh run view "$LIVE_E2E_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,name)"
+          jq -e --arg sha "$CANDIDATE_SHA" '.conclusion == "success" and .headSha == $sha and .name == "CI"' <<<"$credentialless_run" >/dev/null
+          jq -e '.conclusion == "success" and .name == "Sandcastle live E2E release gate"' <<<"$live_run" >/dev/null
+          mkdir -p "$RUNNER_TEMP/prerequisites/credentialless" "$RUNNER_TEMP/prerequisites/live"
+          gh run download "$CREDENTIALLESS_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "sandcastle-credentialless-${CANDIDATE_SHA}" \
+            --dir "$RUNNER_TEMP/prerequisites/credentialless"
+          gh run download "$LIVE_E2E_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "sandcastle-live-e2e-${CANDIDATE_SHA}" \
+            --dir "$RUNNER_TEMP/prerequisites/live"
+
+      - name: Verify prerequisite reports are successful and candidate-bound
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          credentialless_report="$(find "$RUNNER_TEMP/prerequisites/credentialless" -type f -name '*.json' -print -quit)"
+          live_report="$(find "$RUNNER_TEMP/prerequisites/live" -type f -name '*.json' -print -quit)"
+          jq -e --arg sha "$CANDIDATE_SHA" \
+            '.command == "verify-fixture-matrix" and .ok == true and .result.ok == true and .result.candidateSha == $sha' \
+            "$credentialless_report" >/dev/null
+          jq -e --arg sha "$CANDIDATE_SHA" \
+            '.command == "verify-live-e2e" and .ok == true and .result.ok == true and .result.candidateSha == $sha' \
+            "$live_report" >/dev/null
+          cp "$credentialless_report" "$RUNNER_TEMP/credentialless-gate.json"
+          cp "$live_report" "$RUNNER_TEMP/live-e2e-gate.json"
+
+      - name: Create the source manifest and reproducible package snapshots
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          node dist/cli.js release-source-manifest --candidate-sha "$CANDIDATE_SHA" \
+            | jq -e --arg tag "$RELEASE_TAG" '.result | select(.tag == $tag)' \
+            > release-manifest.json
+          npm pack --json --pack-destination "$RUNNER_TEMP/release" > "$RUNNER_TEMP/npm-pack.json"
+          package_filename="$(jq -r '.[0].filename' "$RUNNER_TEMP/npm-pack.json")"
+          cp "$RUNNER_TEMP/release/$package_filename" \
+            "$RUNNER_TEMP/release/setup-sandcastle-queue-skill-${RELEASE_TAG}.tgz"
+
+      - name: Build the reproducible linux-amd64 control-plane image
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ghcr.io/troymayrain/setup-sandcastle-queue-control-plane
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --build-arg SOURCE_DATE_EPOCH=946684800 \
+            --file Dockerfile \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
+            --output "type=docker,dest=$RUNNER_TEMP/control-plane.tar,rewrite-timestamp=true" \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --tag "$IMAGE_REPOSITORY:$RELEASE_TAG" \
+            .
+          image_digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
+          expected_digest="$(node --input-type=module -e 'import { CONTROL_PLANE_IMAGE_DIGEST } from "./dist/index.js"; process.stdout.write(CONTROL_PLANE_IMAGE_DIGEST)')"
+          if [[ "$image_digest" != "$expected_digest" ]]; then
+            exit 3
+          fi
+          docker load --input "$RUNNER_TEMP/control-plane.tar"
+          if [[ "$(docker run --rm "$IMAGE_REPOSITORY:$RELEASE_TAG" version)" != "$RELEASE_TAG" ]]; then
+            exit 3
+          fi
+          if [[ "$(docker run --rm --entrypoint node "$IMAGE_REPOSITORY:$RELEASE_TAG" --version)" != "v22.22.2" ]]; then
+            exit 3
+          fi
+          if [[ "$(docker run --rm --entrypoint claude "$IMAGE_REPOSITORY:$RELEASE_TAG" --version)" != "2.1.217 (Claude Code)" ]]; then
+            exit 3
+          fi
+
+      - name: Assemble and enforce the cross-distribution release contract
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          CREDENTIALLESS_RUN_ID: ${{ inputs.credentialless_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          LIVE_E2E_RUN_ID: ${{ inputs.live_e2e_run_id }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          package_filename="$(jq -r '.[0].filename' "$RUNNER_TEMP/npm-pack.json")"
+          package_contents="$(jq -c '[.[0].files[].path]' "$RUNNER_TEMP/npm-pack.json")"
+          npm_sha="$(sha256sum "$RUNNER_TEMP/release/$package_filename" | cut -d' ' -f1)"
+          skill_filename="setup-sandcastle-queue-skill-${RELEASE_TAG}.tgz"
+          skill_sha="$(sha256sum "$RUNNER_TEMP/release/$skill_filename" | cut -d' ' -f1)"
+          image_digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
+          image_reference="ghcr.io/troymayrain/setup-sandcastle-queue-control-plane@${image_digest}"
+          credentialless_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CREDENTIALLESS_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-credentialless-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
+          live_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${LIVE_E2E_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-live-e2e-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
+          credentialless_sha="$(sha256sum "$RUNNER_TEMP/credentialless-gate.json" | cut -d' ' -f1)"
+          live_sha="$(sha256sum "$RUNNER_TEMP/live-e2e-gate.json" | cut -d' ' -f1)"
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg credentiallessArtifactId "$credentialless_artifact_id" \
+            --arg credentiallessRunId "$CREDENTIALLESS_RUN_ID" \
+            --arg credentiallessSha "$credentialless_sha" \
+            --arg imageDigest "$image_digest" \
+            --arg imageReference "$image_reference" \
+            --arg liveArtifactId "$live_artifact_id" \
+            --arg liveRunId "$LIVE_E2E_RUN_ID" \
+            --arg liveSha "$live_sha" \
+            --arg npmFilename "$package_filename" \
+            --arg npmSha "$npm_sha" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg skillFilename "$skill_filename" \
+            --arg skillSha "$skill_sha" \
+            --argjson contents "$package_contents" \
+            --slurpfile manifest release-manifest.json \
+            '{
+              schemaVersion: 1,
+              candidateSha: $candidateSha,
+              tag: $releaseTag,
+              gates: {
+                credentialless: {
+                  artifactId: $credentiallessArtifactId,
+                  candidateSha: $candidateSha,
+                  conclusion: "success",
+                  kind: "credentialless",
+                  reportSha256: $credentiallessSha,
+                  runId: $credentiallessRunId
+                },
+                liveE2E: {
+                  artifactId: $liveArtifactId,
+                  candidateSha: $candidateSha,
+                  conclusion: "success",
+                  kind: "live-e2e",
+                  reportSha256: $liveSha,
+                  runId: $liveRunId
+                }
+              },
+              artifacts: {
+                npm: {
+                  contents: $contents,
+                  filename: $npmFilename,
+                  manifest: $manifest[0],
+                  name: "setup-sandcastle-queue",
+                  sha256: $npmSha,
+                  version: $releaseTag
+                },
+                skillSnapshot: {
+                  contents: $contents,
+                  filename: $skillFilename,
+                  manifest: $manifest[0],
+                  sha256: $skillSha,
+                  version: $releaseTag
+                },
+                controlPlaneImage: {
+                  dependencyLockSha256: $manifest[0].controlPlaneLockSha256,
+                  digest: $imageDigest,
+                  manifest: $manifest[0],
+                  platform: "linux/amd64",
+                  reference: $imageReference,
+                  repository: "ghcr.io/troymayrain/setup-sandcastle-queue-control-plane",
+                  tag: $releaseTag,
+                  versions: {
+                    brokerSchema: 1,
+                    claudeCode: "2.1.217",
+                    node: "22.22.2",
+                    sandcastleQueue: $releaseTag
+                  }
+                },
+                githubRelease: {
+                  assets: [
+                    {filename: $npmFilename, kind: "npm", sha256: $npmSha},
+                    {filename: $skillFilename, kind: "skill", sha256: $skillSha}
+                  ],
+                  manifest: $manifest[0],
+                  tag: $releaseTag,
+                  targetCommitish: $candidateSha
+                }
+              }
+            }' > "$RUNNER_TEMP/release-input.json"
+          node dist/cli.js verify-release-bundle \
+            --input "$RUNNER_TEMP/release-input.json" \
+            | tee "$RUNNER_TEMP/release-gate.json"
+
+      - name: Stage the exact approved bytes for transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/approved"
+          cp "$RUNNER_TEMP/release/"*.tgz "$RUNNER_TEMP/approved/"
+          cp "$RUNNER_TEMP/release-gate.json" "$RUNNER_TEMP/approved/"
+          cp release-manifest.json "$RUNNER_TEMP/approved/"
+
+      - name: Preserve only the approved candidate artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-candidate-${{ needs.authorize.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/approved/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the already approved bytes
+    needs:
+      - authorize
+      - release-gate
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Check out the exact tagged candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.authorize.outputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Use the pinned Node.js runtime for npm publication
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          registry-url: https://registry.npmjs.org
+
+      - name: Download approved package bytes and evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-candidate-${{ needs.authorize.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/approved
+
+      - name: Rebuild and push only the approved control-plane digest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REPOSITORY: ghcr.io/troymayrain/setup-sandcastle-queue-control-plane
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          jq -e '.ok == true and .result.ok == true' "$RUNNER_TEMP/approved/release-gate.json" >/dev/null
+          approved_image="$(jq -r '.result.image' "$RUNNER_TEMP/approved/release-gate.json")"
+          expected_digest="${approved_image##*@}"
+          if [[ ! "$expected_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            exit 3
+          fi
+          docker buildx build \
+            --build-arg SOURCE_DATE_EPOCH=946684800 \
+            --file Dockerfile \
+            --metadata-file "$RUNNER_TEMP/publish-image-metadata.json" \
+            --output "type=docker,dest=$RUNNER_TEMP/publish-control-plane.tar,rewrite-timestamp=true" \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --tag "$IMAGE_REPOSITORY:$RELEASE_TAG" \
+            .
+          docker load --input "$RUNNER_TEMP/publish-control-plane.tar"
+          built_digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/publish-image-metadata.json")"
+          if [[ "$built_digest" != "$expected_digest" ]]; then
+            exit 3
+          fi
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE_REPOSITORY:$RELEASE_TAG"
+          pushed_digest="$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$RELEASE_TAG" | awk '/^Digest:/ {print $2; exit}')"
+          if [[ "$pushed_digest" != "$expected_digest" ]]; then
+            exit 3
+          fi
+
+      - name: Publish the npm package with the exact SemVer
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: npm publish "$RUNNER_TEMP/approved/setup-sandcastle-queue-${RELEASE_TAG}.tgz" --access public
+
+      - name: Publish the GitHub Release and skill snapshot from the same tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: >-
+          gh release create "$RELEASE_TAG"
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --title "setup-sandcastle-queue $RELEASE_TAG"
+          "$RUNNER_TEMP/approved/setup-sandcastle-queue-${RELEASE_TAG}.tgz"
+          "$RUNNER_TEMP/approved/setup-sandcastle-queue-skill-${RELEASE_TAG}.tgz"
+          "$RUNNER_TEMP/approved/release-manifest.json"
+          "$RUNNER_TEMP/approved/release-gate.json"

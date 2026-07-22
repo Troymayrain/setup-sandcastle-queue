@@ -1,0 +1,10 @@
+export const CLAUDE_CODE_VERSION = "2.1.217";
+export const CONTROL_PLANE_NODE_VERSION = "22.22.2";
+export const CONTROL_PLANE_IMAGE_REPOSITORY =
+  "ghcr.io/troymayrain/setup-sandcastle-queue-control-plane";
+export const CONTROL_PLANE_IMAGE_DIGEST_HEX =
+  "c172347e358d73716d248fa2ac3f09cc93a5e48441e892e8db636e0e381544e5";
+export const CONTROL_PLANE_IMAGE_DIGEST =
+  `sha256:${CONTROL_PLANE_IMAGE_DIGEST_HEX}`;
+export const CONTROL_PLANE_IMAGE =
+  `${CONTROL_PLANE_IMAGE_REPOSITORY}@${CONTROL_PLANE_IMAGE_DIGEST}`;

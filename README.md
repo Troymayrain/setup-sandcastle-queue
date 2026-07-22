@@ -41,7 +41,7 @@ node /path/to/setup-sandcastle-queue/dist/cli.js doctor --offline
 
 ## 安装入口
 
-仓库根同时是 setup skill package。支持 Agent skill 的环境应通过 `SKILL.md` 调用 `node scripts/setup.mjs`，npm CLI 和 setup skill 都委托给同一个 installer core。当前 package 尚未完成 #37 的发布 gate，请勿假设 registry 中已有可用的 `0.1.0`。
+仓库根同时是 setup skill package。支持 Agent skill 的环境应通过 `SKILL.md` 调用 `node scripts/setup.mjs`，npm CLI 和 setup skill 都委托给同一个 installer core。`0.1.0` release workflow 与四分发物一致性 gate 已就绪，但尚无真实运行和发布证据，请勿假设 npm、GitHub Release 或 GHCR 中已有可用的 `0.1.0`。
 
 ## 开发验证
 

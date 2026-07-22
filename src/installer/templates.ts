@@ -14,6 +14,7 @@ import {
   WORKFLOW_OPERATION_CONTRACTS,
   type WorkflowOperation,
 } from "../workflow/security.js";
+import { CONTROL_PLANE_IMAGE_DIGEST_HEX } from "../release/metadata.js";
 
 export const TEMPLATE_VERSION = "1.0.0";
 export const RUNTIME_SKILLS_UPSTREAM_COMMIT =
@@ -27,6 +28,8 @@ export const RUNTIME_SKILL_HASHES: Record<
   implement: "2139cfedf24791adbc839aaab6019cff158af1e28bfead020ec6e0ce01b3e74d",
   tdd: "81eca2a5b53a63f481c0849be7a663a8cd43d5cf53f32b644ec0a2f50cf91aa2",
 };
+const controlPlaneImage =
+  `ghcr.io/troymayrain/setup-sandcastle-queue-control-plane@sha256:${CONTROL_PLANE_IMAGE_DIGEST_HEX}`;
 
 export type AssetOwnership = "installer" | "installer-state" | "project";
 
@@ -110,6 +113,8 @@ jobs:
     if: \${{ inputs.operation == 'start' }}
     name: Initialize stable Batch
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     outputs:
       batch-id: \${{ steps.batch-identity.outputs.batch-id }}
     permissions:
@@ -147,6 +152,8 @@ jobs:
     if: \${{ always() && !cancelled() && contains(fromJSON('["start","continue","resume"]'), inputs.operation) && (inputs.operation != 'start' || needs.initialize-batch.result == 'success') }}
     name: Process or resume a Batch
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     timeout-minutes: 350
     environment: sandcastle
     permissions:
@@ -174,6 +181,8 @@ ${workflowPermissions("process")}
     if: \${{ inputs.operation == 'review-only' }}
     name: Run cumulative review only
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     timeout-minutes: 350
     environment: sandcastle
     permissions:
@@ -200,6 +209,8 @@ ${workflowPermissions("review-only")}
     if: \${{ inputs.operation == 'final-fix' }}
     name: Run one bounded final fix
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     timeout-minutes: 350
     environment: sandcastle
     permissions:
@@ -226,6 +237,8 @@ ${workflowPermissions("final-fix")}
     if: \${{ inputs.operation == 'abort' }}
     name: Abort a Batch recoverably
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     permissions:
 ${workflowPermissions("abort")}
     steps:
@@ -249,6 +262,8 @@ ${workflowPermissions("abort")}
     if: \${{ inputs.operation == 'remote-doctor' }}
     name: Verify real Actions boundaries
     runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
     timeout-minutes: 15
     environment: sandcastle
     permissions:

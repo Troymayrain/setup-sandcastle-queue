@@ -13,12 +13,16 @@
     }
   },
   "files": [
+    "Dockerfile",
+    "LICENSE",
     "OPERATIONS.md",
     "SKILL.md",
     "THIRD_PARTY_NOTICES.md",
     "agents",
     "assets",
+    "control-plane",
     "dist",
+    "release-manifest.json",
     "schema",
     "scripts",
     "vendor"

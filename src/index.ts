@@ -368,5 +368,25 @@ export type {
   CredentiallessFixtureMatrixResult,
   FixtureLifecycleStep,
 } from "./ci/fixture-matrix.js";
+export {
+  createReleaseSourceManifest,
+  evaluateReleaseBundleGate,
+  readReleaseBundleGateInput,
+} from "./release/bundle.js";
+export type {
+  ReleaseBundleGateResult,
+  ReleaseGateDiagnostic,
+  ReleaseGateKind,
+  ReleasePrerequisiteEvidence,
+  ReleaseSourceManifest,
+} from "./release/bundle.js";
+export {
+  CLAUDE_CODE_VERSION,
+  CONTROL_PLANE_IMAGE,
+  CONTROL_PLANE_IMAGE_DIGEST,
+  CONTROL_PLANE_IMAGE_DIGEST_HEX,
+  CONTROL_PLANE_IMAGE_REPOSITORY,
+  CONTROL_PLANE_NODE_VERSION,
+} from "./release/metadata.js";
 export { TEMPLATE_VERSION } from "./installer/templates.js";
 export { VERSION } from "./version.js";
