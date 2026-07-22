@@ -26,6 +26,9 @@ export interface RuntimeProposal {
     adapter: BuiltInAdapter;
     confirmed: boolean;
     signals: string[];
+    tools?: {
+      maven?: string;
+    };
     version: string;
   };
 }
@@ -260,6 +263,75 @@ function assertValidGoSum(source: string, requirements: GoRequirement[]): void {
   }
 }
 
+function parseProperties(source: string): Map<string, string> {
+  const properties = new Map<string, string>();
+  for (const sourceLine of source.split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      throw detectionError(
+        "MAVEN_WRAPPER_INVALID",
+        "Maven Wrapper properties must use exact key=value entries.",
+      );
+    }
+    const key = line.slice(0, separator).trim();
+    const value = line
+      .slice(separator + 1)
+      .trim()
+      .replaceAll("\\:", ":")
+      .replaceAll("\\=", "=");
+    if (!key || !value || properties.has(key)) {
+      throw detectionError(
+        "MAVEN_WRAPPER_INVALID",
+        "Maven Wrapper properties must use unique non-empty entries.",
+      );
+    }
+    properties.set(key, value);
+  }
+  return properties;
+}
+
+function exactMavenArtifactVersion(value: string): boolean {
+  return (
+    /^[0-9A-Za-z][0-9A-Za-z._+-]*$/u.test(value) &&
+    !value.toUpperCase().includes("SNAPSHOT")
+  );
+}
+
+function assertMavenVersionPolicy(source: string): void {
+  if (!/<project(?:\s|>)[\s\S]*<\/project>/u.test(source)) {
+    throw detectionError(
+      "MAVEN_PROJECT_INVALID",
+      "pom.xml is not a recognizable Maven project model.",
+    );
+  }
+  const blocks = [
+    ...source.matchAll(/<(dependency|plugin)>[\s\S]*?<\/\1>/gu),
+  ];
+  if (
+    blocks.some((match) => {
+      const block = match[0];
+      const group = block.match(/<groupId>\s*([^<]+?)\s*<\/groupId>/u)?.[1];
+      const artifact = block.match(
+        /<artifactId>\s*([^<]+?)\s*<\/artifactId>/u,
+      )?.[1];
+      const version = block.match(/<version>\s*([^<]+?)\s*<\/version>/u)?.[1];
+      return (
+        !group ||
+        !artifact ||
+        !version ||
+        !exactMavenArtifactVersion(version)
+      );
+    })
+  ) {
+    throw detectionError(
+      "MAVEN_VERSION_POLICY_INVALID",
+      "Maven dependencies and plugins must declare exact non-SNAPSHOT versions.",
+    );
+  }
+}
+
 async function nodeProposal(
   repository: string,
   confirmation?: RuntimeConfirmation,
@@ -471,6 +543,120 @@ async function goProposal(
   };
 }
 
+async function javaProposal(
+  repository: string,
+  confirmation?: RuntimeConfirmation,
+): Promise<RuntimeProposal | null> {
+  const pomPath = join(repository, "pom.xml");
+  if (!(await pathExists(pomPath))) return null;
+  const javaVersionPath = join(repository, ".java-version");
+  const wrapperPath = join(repository, "mvnw");
+  const wrapperPropertiesPath = join(
+    repository,
+    ".mvn",
+    "wrapper",
+    "maven-wrapper.properties",
+  );
+  if (
+    !(await pathExists(javaVersionPath)) ||
+    !(await pathExists(wrapperPath)) ||
+    !(await pathExists(wrapperPropertiesPath))
+  ) {
+    throw detectionError(
+      "MAVEN_WRAPPER_REQUIRED",
+      "Java projects require .java-version and the Maven Wrapper files.",
+    );
+  }
+  const [javaVersionSource, pomSource, wrapperSource, propertiesSource] =
+    await Promise.all([
+      readFile(javaVersionPath, "utf8"),
+      readFile(pomPath, "utf8"),
+      readFile(wrapperPath, "utf8"),
+      readFile(wrapperPropertiesPath, "utf8"),
+    ]);
+  const javaVersion = exactVersion(javaVersionSource);
+  const compilerRelease = pomSource.match(
+    /<maven\.compiler\.release>\s*([^<]+?)\s*<\/maven\.compiler\.release>/u,
+  )?.[1];
+  if (!javaVersion || !javaVersion.startsWith("21.") || compilerRelease !== "21") {
+    throw detectionError(
+      "JAVA_RUNTIME_INVALID",
+      "The Java adapter requires an exact JDK 21 patch version and compiler release 21.",
+    );
+  }
+  assertMavenVersionPolicy(pomSource);
+
+  const properties = parseProperties(propertiesSource);
+  const distributionUrl = properties.get("distributionUrl");
+  const distributionChecksum = properties.get("distributionSha256Sum");
+  const distribution = distributionUrl?.match(
+    /^https:\/\/repo\.maven\.apache\.org\/maven2\/org\/apache\/maven\/apache-maven\/([0-9]+\.[0-9]+\.[0-9]+)\/apache-maven-\1-bin\.zip$/u,
+  );
+  if (!distribution?.[1]) {
+    throw detectionError(
+      "MAVEN_WRAPPER_INVALID",
+      "The Maven Wrapper distribution must be an exact official Maven release.",
+    );
+  }
+  if (!distributionChecksum || !/^[a-f0-9]{64}$/u.test(distributionChecksum)) {
+    throw detectionError(
+      "MAVEN_WRAPPER_CHECKSUM_INVALID",
+      "The Maven Wrapper distribution requires an exact SHA-256 checksum.",
+    );
+  }
+  if (
+    confirmation &&
+    (confirmation.adapter !== "java-maven" ||
+      confirmation.version !== javaVersion)
+  ) {
+    throw detectionError(
+      "RUNTIME_CONFIRMATION_INVALID",
+      "The confirmed runtime does not match a detected project declaration.",
+    );
+  }
+  const strictMaven = [
+    "./mvnw",
+    "--batch-mode",
+    "--no-transfer-progress",
+    "--strict-checksums",
+  ];
+  return {
+    adapterPlan: {
+      bootstrap: [
+        { argv: [...strictMaven, "dependency:go-offline"] },
+      ],
+      environment: {
+        inputs: [
+          environmentInput(".java-version", javaVersionSource),
+          environmentInput(
+            ".mvn/wrapper/maven-wrapper.properties",
+            propertiesSource,
+          ),
+          environmentInput("mvnw", wrapperSource),
+          environmentInput("pom.xml", pomSource),
+        ],
+      },
+      networkHosts: ["repo.maven.apache.org"],
+    },
+    commands: {
+      tests: [{ argv: [...strictMaven, "test"] }],
+      verification: [
+        { argv: [...strictMaven, "verify", "-DskipTests"] },
+      ],
+    },
+    runtime: {
+      adapter: "java-maven",
+      confirmed: confirmation !== undefined,
+      signals: [
+        ".java-version",
+        ".mvn/wrapper/maven-wrapper.properties#distributionUrl",
+      ],
+      tools: { maven: distribution[1] },
+      version: javaVersion,
+    },
+  };
+}
+
 async function pythonProposal(
   repository: string,
   confirmation?: RuntimeConfirmation,
@@ -671,6 +857,8 @@ export async function proposeRuntime(
         ? await nodeProposal(root, confirmation)
         : confirmation.adapter === "go-module"
           ? await goProposal(root, confirmation)
+          : confirmation.adapter === "java-maven"
+            ? await javaProposal(root, confirmation)
         : confirmation.adapter === "python-pip" ||
             confirmation.adapter === "python-uv"
           ? await pythonProposal(root, confirmation)
@@ -685,7 +873,12 @@ export async function proposeRuntime(
   }
 
   const proposals = (
-    await Promise.all([goProposal(root), nodeProposal(root), pythonProposal(root)])
+    await Promise.all([
+      goProposal(root),
+      javaProposal(root),
+      nodeProposal(root),
+      pythonProposal(root),
+    ])
   ).filter((proposal): proposal is RuntimeProposal => proposal !== null);
   if (proposals.length > 1) {
     throw detectionError(

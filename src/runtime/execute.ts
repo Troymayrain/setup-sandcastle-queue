@@ -159,6 +159,7 @@ async function captureEnvironment(
       inputs: plan.environment.inputs,
       resolved,
       runtimeVersion: proposal.runtime.version,
+      tools: proposal.runtime.tools ?? {},
     }),
   );
 }

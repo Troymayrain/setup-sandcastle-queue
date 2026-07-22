@@ -58,6 +58,9 @@ export interface ProjectConfig {
       schemaVersion: 1;
     };
     networkHosts?: string[];
+    tools?: {
+      maven?: string;
+    };
     version: string;
   };
   commands: {
@@ -217,6 +220,20 @@ function runtimeDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
         path: "/runtime/custom",
       },
     );
+  }
+  if (config.runtime.adapter === "java-maven" && !config.runtime.tools?.maven) {
+    diagnostics.push({
+      code: "MAVEN_VERSION_REQUIRED",
+      message: "The Java adapter requires an exact Maven Wrapper version.",
+      path: "/runtime/tools/maven",
+    });
+  }
+  if (config.runtime.adapter !== "java-maven" && config.runtime.tools) {
+    diagnostics.push({
+      code: "RUNTIME_TOOLS_NOT_ALLOWED",
+      message: "This runtime adapter does not accept Java tool metadata.",
+      path: "/runtime/tools",
+    });
   }
   for (const [index, host] of (config.runtime.networkHosts ?? []).entries()) {
     if (!isExactNetworkHost(host)) {

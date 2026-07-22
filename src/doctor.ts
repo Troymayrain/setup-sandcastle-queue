@@ -344,7 +344,9 @@ async function checkRuntimeAndCommands(
   }
   if (
     proposal.runtime.adapter !== config.runtime.adapter ||
-    proposal.runtime.version !== config.runtime.version
+    proposal.runtime.version !== config.runtime.version ||
+    canonicalJson(proposal.runtime.tools ?? {}) !==
+      canonicalJson(config.runtime.tools ?? {})
   ) {
     return [
       diagnostic(

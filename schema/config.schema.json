@@ -55,6 +55,17 @@
             "maxLength": 253
           }
         },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "maven": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+            }
+          }
+        },
         "custom": {
           "type": "object",
           "additionalProperties": false,
