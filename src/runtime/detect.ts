@@ -141,28 +141,68 @@ function environmentInput(path: string, source: string): RuntimeEnvironmentInput
   return { path, sha256: sha256(source) };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function assertValidNpmLock(
+  source: string,
+  packageName: unknown,
+): void {
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(source) as unknown;
+  } catch {
+    candidate = null;
+  }
+  if (
+    !isRecord(candidate) ||
+    (candidate.lockfileVersion !== 2 && candidate.lockfileVersion !== 3) ||
+    !isRecord(candidate.packages) ||
+    (typeof packageName === "string" &&
+      typeof candidate.name === "string" &&
+      candidate.name !== packageName)
+  ) {
+    throw detectionError(
+      "NPM_LOCK_INVALID",
+      "Node/npm requires a supported package lock matching the application manifest.",
+    );
+  }
+}
+
 async function nodeProposal(
   repository: string,
   confirmation?: RuntimeConfirmation,
 ): Promise<RuntimeProposal | null> {
   const lockPath = join(repository, "package-lock.json");
   const packagePath = join(repository, "package.json");
-  if (!(await pathExists(lockPath)) || !(await pathExists(packagePath))) {
+  if (!(await pathExists(packagePath))) {
     return null;
+  }
+  if (!(await pathExists(lockPath))) {
+    throw detectionError(
+      "NPM_LOCK_REQUIRED",
+      "Node/npm projects require package-lock.json for reproducible execution.",
+    );
   }
 
   let packageMetadata: {
     engines?: { node?: unknown };
+    name?: unknown;
     scripts?: Record<string, unknown>;
   };
+  let packageSource: string;
   try {
-    packageMetadata = JSON.parse(await readFile(packagePath, "utf8")) as typeof packageMetadata;
+    packageSource = await readFile(packagePath, "utf8");
+    packageMetadata = JSON.parse(packageSource) as typeof packageMetadata;
   } catch {
     throw detectionError(
       "RUNTIME_METADATA_INVALID",
       "package.json is not valid JSON.",
     );
   }
+  const lockSource = await readFile(lockPath, "utf8");
+  assertValidNpmLock(lockSource, packageMetadata.name);
 
   const versions: Array<{ source: string; version: string }> = [];
   let hasInvalidVersionDeclaration = false;
@@ -224,6 +264,16 @@ async function nodeProposal(
     .filter((name) => typeof packageMetadata.scripts?.[name] === "string")
     .map((name) => ({ argv: ["npm", "run", name] }));
   return {
+    adapterPlan: {
+      bootstrap: [{ argv: ["npm", "ci"] }],
+      environment: {
+        inputs: [
+          environmentInput("package-lock.json", lockSource),
+          environmentInput("package.json", packageSource),
+        ],
+      },
+      networkHosts: ["registry.npmjs.org"],
+    },
     commands: {
       tests: [{ argv: ["npm", "test"] }],
       verification,

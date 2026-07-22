@@ -56,6 +56,24 @@ test("propose detects an exact Node npm runtime and direct completion commands",
     command: "propose",
     ok: true,
     result: {
+      adapterPlan: {
+        bootstrap: [{ argv: ["npm", "ci"] }],
+        environment: {
+          inputs: [
+            {
+              path: "package-lock.json",
+              sha256:
+                "118500de73eec6dd0d2ca09649505b7270dcebfc53f80f6aba367cd9a853ff03",
+            },
+            {
+              path: "package.json",
+              sha256:
+                "8dd6fcbf71783f3ae91cdfb98bec1cab021daaf705d9eebf5c4885282ccc0028",
+            },
+          ],
+        },
+        networkHosts: ["registry.npmjs.org"],
+      },
       commands: {
         tests: [{ argv: ["npm", "test"] }],
         verification: [{ argv: ["npm", "run", "typecheck"] }],
