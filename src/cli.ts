@@ -72,6 +72,10 @@ import {
   completeNoChangeBatch,
   recordTicketNoChange,
 } from "./batch/no-change.js";
+import {
+  evaluateLiveE2EReleaseGate,
+  readLiveE2EReleaseGateInput,
+} from "./release/live-e2e.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -780,6 +784,24 @@ async function main(): Promise<void> {
     const result = await verifySpecSnapshot(process.cwd(), snapshot);
     writeJson({ command: "verify-spec", ok: true, result, version: VERSION });
     process.exitCode = 0;
+    return;
+  }
+
+  if (command === "verify-live-e2e") {
+    const inputPath = optionValue("--input");
+    if (!inputPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-live-e2e requires --input <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const input = await readLiveE2EReleaseGateInput(inputPath);
+    const result = evaluateLiveE2EReleaseGate(input);
+    writeJson({ command, ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 4;
     return;
   }
 

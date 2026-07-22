@@ -337,5 +337,18 @@ export type {
   UpgradeConflict,
   UpgradePlanMetadata,
 } from "./installer/plan.js";
+export {
+  evaluateLiveE2EReleaseGate,
+  readLiveE2EReleaseGateInput,
+} from "./release/live-e2e.js";
+export type {
+  LiveE2EFixture,
+  LiveE2EFixtureChecks,
+  LiveE2EFixtureEvidence,
+  LiveE2EFixtureTarget,
+  LiveE2EGateDiagnostic,
+  LiveE2EReleaseGateInput,
+  LiveE2EReleaseGateResult,
+} from "./release/live-e2e.js";
 export { TEMPLATE_VERSION } from "./installer/templates.js";
 export { VERSION } from "./version.js";
