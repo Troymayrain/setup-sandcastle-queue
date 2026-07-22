@@ -60,9 +60,14 @@ export {
   readInstallPlan,
 } from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
-export { proposeRuntime } from "./runtime/detect.js";
+export {
+  proposeCompositeRuntime,
+  proposeRuntime,
+} from "./runtime/detect.js";
 export type {
   BuiltInAdapter,
+  CompositeRuntimeProposal,
+  RuntimeAdapter,
   RuntimeAdapterPlan,
   RuntimeEnvironmentInput,
   RuntimeProposal,
@@ -76,6 +81,13 @@ export type {
   RuntimeAdapterPhase,
   RuntimeAdapterRuntime,
 } from "./runtime/execute.js";
+export { executeCompositeRuntime } from "./runtime/composite.js";
+export type {
+  CompositeComponentExecution,
+  CompositeRuntimeExecutionOptions,
+  CompositeRuntimeExecutionResult,
+} from "./runtime/composite.js";
+export { createCustomRuntimeProposal } from "./runtime/custom.js";
 export {
   applyGitHubConfiguration,
   inspectGitHubEnvironmentResources,

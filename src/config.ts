@@ -47,6 +47,7 @@ export interface ProjectConfig {
   };
   runtime: {
     adapter:
+      | "composite"
       | "custom"
       | "go-module"
       | "java-maven"
@@ -54,7 +55,21 @@ export interface ProjectConfig {
       | "python-pip"
       | "python-uv";
     custom?: {
+      bootstrap: CommandSpec[];
       name: string;
+      schemaVersion: 1;
+    };
+    composite?: {
+      adapters: Array<{
+        adapter:
+          | "go-module"
+          | "java-maven"
+          | "node-npm"
+          | "python-pip"
+          | "python-uv";
+        tools?: { maven?: string };
+        version: string;
+      }>;
       schemaVersion: 1;
     };
     networkHosts?: string[];
@@ -136,6 +151,17 @@ function normalizeSchemaError(error: ErrorObject): ConfigurationDiagnostic {
     };
   }
 
+  if (
+    error.instancePath === "/runtime/composite/schemaVersion" &&
+    error.keyword === "const"
+  ) {
+    return {
+      code: "UNSUPPORTED_COMPOSITE_ADAPTER_SCHEMA",
+      message: "Only composite adapter schema version 1 is supported.",
+      path: error.instancePath,
+    };
+  }
+
   if (error.keyword === "additionalProperties") {
     const field = String(error.params.additionalProperty);
     return {
@@ -181,7 +207,16 @@ function normalizeSchemaError(error: ErrorObject): ConfigurationDiagnostic {
 function commandDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
   const diagnostics: ConfigurationDiagnostic[] = [];
 
-  for (const [groupName, commands] of Object.entries(config.commands)) {
+  const commandGroups: Array<[string, CommandSpec[]]> = [
+    ...Object.entries(config.commands),
+    ...(config.runtime.adapter === "custom" && config.runtime.custom
+      ? [["runtime/custom/bootstrap", config.runtime.custom.bootstrap] as [
+          string,
+          CommandSpec[],
+        ]]
+      : []),
+  ];
+  for (const [groupName, commands] of commandGroups) {
     commands.forEach((command, index) => {
       const executable = basename(command.argv[0] ?? "").toLowerCase();
       if (
@@ -192,7 +227,32 @@ function commandDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
           code: "UNSAFE_COMMAND",
           message:
             "Commands must be direct argv specifications without shell execution or interpolation.",
-          path: `/commands/${groupName}/${index}`,
+          path: groupName.startsWith("runtime/")
+            ? `/${groupName}/${index}`
+            : `/commands/${groupName}/${index}`,
+        });
+      }
+      if (
+        config.runtime.adapter === "custom" &&
+        (executable === "docker" ||
+          executable === "podman" ||
+          command.argv.some(
+            (argument, argumentIndex) =>
+              argument === "--privileged" ||
+              argument === "--network=host" ||
+              argument.includes("/var/run/docker.sock") ||
+              (argument === "--network" &&
+                command.argv[argumentIndex + 1] === "host") ||
+              argument === "--use-api-socket",
+          ))
+      ) {
+        diagnostics.push({
+          code: "CUSTOM_ADAPTER_UNSAFE",
+          message:
+            "Custom adapter commands cannot control container networking or engine sockets.",
+          path: groupName.startsWith("runtime/")
+            ? `/${groupName}/${index}`
+            : `/commands/${groupName}/${index}`,
         });
       }
     });
@@ -220,6 +280,63 @@ function runtimeDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
         path: "/runtime/custom",
       },
     );
+  }
+  if (config.runtime.adapter === "composite" && !config.runtime.composite) {
+    diagnostics.push({
+      code: "COMPOSITE_ADAPTER_REQUIRED",
+      message: "The composite runtime adapter requires a versioned component list.",
+      path: "/runtime/composite",
+    });
+  }
+  if (config.runtime.adapter !== "composite" && config.runtime.composite) {
+    diagnostics.push({
+      code: "COMPOSITE_ADAPTER_NOT_ALLOWED",
+      message: "Only the composite runtime adapter can include component metadata.",
+      path: "/runtime/composite",
+    });
+  }
+  if (config.runtime.adapter === "composite" && config.runtime.composite) {
+    if (config.runtime.version !== "1.0.0") {
+      diagnostics.push({
+        code: "COMPOSITE_VERSION_INVALID",
+        message: "Composite adapter schema version 1 uses runtime version 1.0.0.",
+        path: "/runtime/version",
+      });
+    }
+    const adapters = config.runtime.composite.adapters.map(({ adapter }) => adapter);
+    if (new Set(adapters).size !== adapters.length) {
+      diagnostics.push({
+        code: "COMPOSITE_VERSION_CONFLICT",
+        message: "Composite components must use one exact version per adapter.",
+        path: "/runtime/composite/adapters",
+      });
+    }
+    for (const [index, component] of config.runtime.composite.adapters.entries()) {
+      if (component.adapter === "java-maven" && !component.tools?.maven) {
+        diagnostics.push({
+          code: "MAVEN_VERSION_REQUIRED",
+          message: "The Java adapter requires an exact Maven Wrapper version.",
+          path: `/runtime/composite/adapters/${index}/tools/maven`,
+        });
+      }
+      if (component.adapter !== "java-maven" && component.tools) {
+        diagnostics.push({
+          code: "RUNTIME_TOOLS_NOT_ALLOWED",
+          message: "This runtime adapter does not accept Java tool metadata.",
+          path: `/runtime/composite/adapters/${index}/tools`,
+        });
+      }
+    }
+  }
+  if (
+    config.runtime.adapter === "custom" &&
+    config.runtime.networkHosts === undefined
+  ) {
+    diagnostics.push({
+      code: "CUSTOM_NETWORK_HOSTS_REQUIRED",
+      message: "Custom adapters must explicitly declare their network hosts.",
+      path: "/runtime/networkHosts",
+    });
   }
   if (config.runtime.adapter === "java-maven" && !config.runtime.tools?.maven) {
     diagnostics.push({

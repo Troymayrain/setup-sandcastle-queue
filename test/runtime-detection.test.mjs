@@ -271,7 +271,12 @@ test("validate-config accepts only the supported custom adapter schema version",
     },
     runtime: {
       adapter: "custom",
-      custom: { name: "acme-runtime", schemaVersion: 1 },
+      custom: {
+        bootstrap: [{ argv: ["acme", "install", "--frozen"] }],
+        name: "acme-runtime",
+        schemaVersion: 1,
+      },
+      networkHosts: [],
       version: "7.4.2",
     },
     commands: {

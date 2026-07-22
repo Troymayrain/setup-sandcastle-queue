@@ -5,7 +5,7 @@ import {
   type CommandSpec,
 } from "../config.js";
 import { sha256 } from "../hash.js";
-import type { BuiltInAdapter, RuntimeProposal } from "./detect.js";
+import type { RuntimeAdapter, RuntimeProposal } from "./detect.js";
 
 export type RuntimeAdapterPhase =
   | "bootstrap"
@@ -38,7 +38,7 @@ export interface RuntimeAdapterExecutionRecord {
 }
 
 interface RuntimeAdapterExecutionBase {
-  adapter: BuiltInAdapter;
+  adapter: RuntimeAdapter;
   environmentHash: string;
   executions: RuntimeAdapterExecutionRecord[];
 }
@@ -156,7 +156,9 @@ async function captureEnvironment(
   return sha256(
     canonicalJson({
       adapter: proposal.runtime.adapter,
+      bootstrap: plan.bootstrap,
       inputs: plan.environment.inputs,
+      networkHosts: plan.networkHosts,
       resolved,
       runtimeVersion: proposal.runtime.version,
       tools: proposal.runtime.tools ?? {},
@@ -164,14 +166,25 @@ async function captureEnvironment(
   );
 }
 
+function assertProposalInput(
+  proposal: RuntimeProposal,
+  runtime: RuntimeAdapterRuntime,
+): void {
+  if (!proposal.adapterPlan || typeof runtime?.run !== "function") {
+    throw configurationError(
+      "RUNTIME_ADAPTER_EXECUTION_INVALID",
+      "Runtime adapter execution requires a complete plan and continuation environment identity.",
+    );
+  }
+}
+
 function assertExecutionInput(
   proposal: RuntimeProposal,
   options: RuntimeAdapterExecutionOptions,
   runtime: RuntimeAdapterRuntime,
 ): void {
+  assertProposalInput(proposal, runtime);
   if (
-    !proposal.adapterPlan ||
-    typeof runtime?.run !== "function" ||
     (options.mode !== "bootstrap" && options.mode !== "continuation") ||
     (options.mode === "continuation" &&
       !/^[a-f0-9]{64}$/u.test(options.expectedEnvironmentHash))
@@ -180,6 +193,54 @@ function assertExecutionInput(
       "RUNTIME_ADAPTER_EXECUTION_INVALID",
       "Runtime adapter execution requires a complete plan and continuation environment identity.",
     );
+  }
+}
+
+export interface PreparedRuntimeAdapter {
+  adapter: RuntimeAdapter;
+  environmentHash: string;
+  executions: RuntimeAdapterExecutionRecord[];
+}
+
+export async function prepareRuntimeAdapter(
+  proposal: RuntimeProposal,
+  mode: "bootstrap" | "continuation",
+  runtime: RuntimeAdapterRuntime,
+): Promise<PreparedRuntimeAdapter> {
+  assertProposalInput(proposal, runtime);
+  if (mode !== "bootstrap" && mode !== "continuation") {
+    throw configurationError(
+      "RUNTIME_ADAPTER_EXECUTION_INVALID",
+      "Runtime adapter execution requires a complete plan and continuation environment identity.",
+    );
+  }
+  const plan = proposal.adapterPlan!;
+  const executions: RuntimeAdapterExecutionRecord[] = [];
+  if (mode === "bootstrap") {
+    for (const [index, command] of plan.bootstrap.entries()) {
+      await executeCommand(command, "bootstrap", index, runtime, executions);
+    }
+  }
+  const environmentHash = await captureEnvironment(
+    proposal,
+    runtime,
+    executions,
+  );
+  return {
+    adapter: proposal.runtime.adapter,
+    environmentHash,
+    executions,
+  };
+}
+
+export async function executeRuntimeAdapterPhase(
+  proposal: RuntimeProposal,
+  phase: "tests" | "verification",
+  runtime: RuntimeAdapterRuntime,
+  executions: RuntimeAdapterExecutionRecord[],
+): Promise<void> {
+  for (const [index, command] of proposal.commands[phase].entries()) {
+    await executeCommand(command, phase, index, runtime, executions);
   }
 }
 
@@ -192,20 +253,8 @@ export async function executeRuntimeAdapter(
   runtime: RuntimeAdapterRuntime,
 ): Promise<RuntimeAdapterExecutionResult> {
   assertExecutionInput(proposal, options, runtime);
-  const plan = proposal.adapterPlan!;
-  const executions: RuntimeAdapterExecutionRecord[] = [];
-
-  if (options.mode === "bootstrap") {
-    for (const [index, command] of plan.bootstrap.entries()) {
-      await executeCommand(command, "bootstrap", index, runtime, executions);
-    }
-  }
-
-  const environmentHash = await captureEnvironment(
-    proposal,
-    runtime,
-    executions,
-  );
+  const prepared = await prepareRuntimeAdapter(proposal, options.mode, runtime);
+  const { environmentHash, executions } = prepared;
   if (
     options.mode === "continuation" &&
     environmentHash !== options.expectedEnvironmentHash
@@ -220,9 +269,7 @@ export async function executeRuntimeAdapter(
   }
 
   for (const phase of ["tests", "verification"] as const) {
-    for (const [index, command] of proposal.commands[phase].entries()) {
-      await executeCommand(command, phase, index, runtime, executions);
-    }
+    await executeRuntimeAdapterPhase(proposal, phase, runtime, executions);
   }
   return {
     adapter: proposal.runtime.adapter,

@@ -15,6 +15,7 @@ export type BuiltInAdapter =
   | "node-npm"
   | "python-pip"
   | "python-uv";
+export type RuntimeAdapter = BuiltInAdapter | "custom";
 
 export interface RuntimeProposal {
   adapterPlan?: RuntimeAdapterPlan;
@@ -23,7 +24,7 @@ export interface RuntimeProposal {
     verification: CommandSpec[];
   };
   runtime: {
-    adapter: BuiltInAdapter;
+    adapter: RuntimeAdapter;
     confirmed: boolean;
     signals: string[];
     tools?: {
@@ -45,6 +46,22 @@ export interface RuntimeAdapterPlan {
     probe?: CommandSpec;
   };
   networkHosts: string[];
+}
+
+export interface CompositeRuntimeProposal {
+  commands: RuntimeProposal["commands"];
+  components: RuntimeProposal[];
+  runtime: {
+    adapter: "composite";
+    components: Array<{
+      adapter: BuiltInAdapter;
+      tools?: { maven?: string };
+      version: string;
+    }>;
+    confirmed: true;
+    order: BuiltInAdapter[];
+    version: "1.0.0";
+  };
 }
 
 interface RuntimeConfirmation {
@@ -894,4 +911,74 @@ export async function proposeRuntime(
     );
   }
   return proposal;
+}
+
+export async function proposeCompositeRuntime(
+  repository: string,
+  order?: BuiltInAdapter[],
+): Promise<CompositeRuntimeProposal> {
+  let root: string;
+  try {
+    root = await resolveRepositoryRoot(repository);
+  } catch {
+    throw new InfrastructureError([
+      {
+        code: "REPOSITORY_INSPECTION_FAILED",
+        message: "Unable to inspect the target repository runtime.",
+      },
+    ]);
+  }
+  const detected = (
+    await Promise.all([
+      goProposal(root),
+      javaProposal(root),
+      nodeProposal(root),
+      pythonProposal(root),
+    ])
+  ).filter((proposal): proposal is RuntimeProposal => proposal !== null);
+  if (detected.length < 2) {
+    throw detectionError(
+      "COMPOSITE_COMPONENTS_REQUIRED",
+      "Composite runtime requires at least two detected built-in adapters.",
+    );
+  }
+  if (!order) {
+    throw detectionError(
+      "COMPOSITE_ORDER_REQUIRED",
+      "Composite runtime execution order requires explicit human confirmation.",
+    );
+  }
+  const detectedAdapters = detected.map(({ runtime }) => runtime.adapter);
+  if (
+    order.length !== detected.length ||
+    new Set(order).size !== order.length ||
+    order.some((adapter) => !detectedAdapters.includes(adapter))
+  ) {
+    throw detectionError(
+      "COMPOSITE_ORDER_INVALID",
+      "Composite runtime order must name every detected adapter exactly once.",
+    );
+  }
+  const byAdapter = new Map(
+    detected.map((proposal) => [proposal.runtime.adapter, proposal]),
+  );
+  const components = order.map((adapter) => byAdapter.get(adapter)!);
+  return {
+    commands: {
+      tests: components.flatMap(({ commands }) => commands.tests),
+      verification: components.flatMap(({ commands }) => commands.verification),
+    },
+    components,
+    runtime: {
+      adapter: "composite",
+      components: components.map(({ runtime }) => ({
+        adapter: runtime.adapter as BuiltInAdapter,
+        ...(runtime.tools ? { tools: runtime.tools } : {}),
+        version: runtime.version,
+      })),
+      confirmed: true,
+      order: [...order],
+      version: "1.0.0",
+    },
+  };
 }

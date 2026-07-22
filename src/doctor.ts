@@ -18,7 +18,10 @@ import {
   RUNTIME_SKILLS_UPSTREAM_COMMIT,
   RUNTIME_SKILL_HASHES,
 } from "./installer/templates.js";
-import { proposeRuntime } from "./runtime/detect.js";
+import {
+  proposeCompositeRuntime,
+  proposeRuntime,
+} from "./runtime/detect.js";
 import {
   createRemoteDoctorBinding,
   remoteDoctorArtifactName,
@@ -330,6 +333,46 @@ async function checkRuntimeAndCommands(
 ): Promise<DoctorDiagnostic[]> {
   if (config.runtime.adapter === "custom") {
     return [];
+  }
+  if (config.runtime.adapter === "composite") {
+    let proposal;
+    try {
+      proposal = await proposeCompositeRuntime(
+        root,
+        config.runtime.composite?.adapters.map(({ adapter }) => adapter),
+      );
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        return error.diagnostics.map(({ code, message, path }) =>
+          diagnostic("runtime", code, message, path),
+        );
+      }
+      throw error;
+    }
+    if (
+      proposal.runtime.version !== config.runtime.version ||
+      canonicalJson(proposal.runtime.components) !==
+      canonicalJson(config.runtime.composite?.adapters ?? [])
+    ) {
+      return [
+        diagnostic(
+          "runtime",
+          "RUNTIME_MISMATCH",
+          "The detected composite runtimes do not match their configured exact versions.",
+          ".sandcastle/config.json",
+        ),
+      ];
+    }
+    return canonicalJson(proposal.commands) === canonicalJson(config.commands)
+      ? []
+      : [
+          diagnostic(
+            "commands",
+            "COMMANDS_MISMATCH",
+            "Configured completion commands differ from the detected runtime commands.",
+            ".sandcastle/config.json",
+          ),
+        ];
   }
   let proposal;
   try {
