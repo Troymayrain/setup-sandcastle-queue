@@ -173,6 +173,23 @@ export type {
   AbortCheckpoint,
   BatchAbortRecord,
 } from "./batch/abort.js";
+export {
+  createRemoteDoctorBinding,
+  remoteDoctorArtifactName,
+  runRemoteDoctor,
+} from "./remote-doctor.js";
+export type {
+  RemoteDoctorArtifactRequest,
+  RemoteDoctorBinding,
+  RemoteDoctorCheck,
+  RemoteDoctorCheckId,
+  RemoteDoctorDiagnostic,
+  RemoteDoctorPermissions,
+  RemoteDoctorProbeInput,
+  RemoteDoctorProbeReceipt,
+  RemoteDoctorResult,
+  RemoteDoctorRuntime,
+} from "./remote-doctor.js";
 export type {
   BatchNoChangeCompletionRecord,
   TicketNoChangeAcceptanceRecord,

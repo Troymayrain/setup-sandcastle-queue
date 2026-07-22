@@ -211,6 +211,13 @@ async function startGitHubServer({
       response.end('{"required_status_checks":{}}');
       return;
     }
+    if (request.url?.startsWith("/repos/acme/widget/actions/artifacts?")) {
+      const url = new URL(request.url, "http://github.test");
+      const name = url.searchParams.get("name");
+      const artifacts = name ? [{ expired: false, name }] : [];
+      response.end(JSON.stringify({ artifacts, total_count: artifacts.length }));
+      return;
+    }
     response.statusCode = 404;
     response.end('{"message":"Not Found"}');
   });

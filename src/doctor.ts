@@ -19,6 +19,10 @@ import {
   RUNTIME_SKILL_HASHES,
 } from "./installer/templates.js";
 import { proposeRuntime } from "./runtime/detect.js";
+import {
+  createRemoteDoctorBinding,
+  remoteDoctorArtifactName,
+} from "./remote-doctor.js";
 
 const runtimeSkillNames = ["code-review", "implement", "tdd"] as const;
 
@@ -29,6 +33,7 @@ export interface DoctorCheck {
     | "github-labels"
     | "github-settings"
     | "managed-files"
+    | "remote-doctor"
     | "runtime"
     | "runtime-skills"
     | "workflow";
@@ -50,6 +55,7 @@ export interface DoctorResult {
 }
 
 interface InstallationManifest {
+  installerVersion: string;
   managedAssets: Record<string, { sha256: string }>;
   schemaVersion: 1;
 }
@@ -108,6 +114,10 @@ function parseManifest(candidate: unknown): InstallationManifest {
   if (
     !isRecord(candidate) ||
     candidate.schemaVersion !== 1 ||
+    typeof candidate.installerVersion !== "string" ||
+    !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(
+      candidate.installerVersion,
+    ) ||
     !isRecord(candidate.managedAssets)
   ) {
     throw new ConfigurationError([
@@ -387,6 +397,155 @@ async function checkWorkflow(root: string): Promise<DoctorDiagnostic[]> {
       ];
 }
 
+interface GitHubArtifact {
+  expired?: boolean;
+  name?: string;
+}
+
+function hasNextPage(headers: Headers): boolean {
+  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
+    headers.get("link") ?? "",
+  );
+}
+
+async function listRemoteDoctorArtifacts(
+  repository: string,
+  environment: NodeJS.ProcessEnv,
+  name?: string,
+): Promise<GitHubArtifact[] | null> {
+  const token = environment.GITHUB_TOKEN;
+  if (!token) return null;
+  const apiUrl = (environment.GITHUB_API_URL ?? "https://api.github.com").replace(
+    /\/$/u,
+    "",
+  );
+  const artifacts: GitHubArtifact[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const query = `${name ? `name=${encodeURIComponent(name)}&` : ""}per_page=100&page=${page}`;
+    let response: Response;
+    try {
+      response = await fetch(
+        `${apiUrl}/repos/${repository}/actions/artifacts?${query}`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "user-agent": "setup-sandcastle-queue",
+            "x-github-api-version": "2022-11-28",
+          },
+          method: "GET",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+    } catch {
+      return null;
+    }
+    if (response.status !== 200) return null;
+    let candidate: unknown;
+    try {
+      candidate = (await response.json()) as unknown;
+    } catch {
+      return null;
+    }
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate) ||
+      !Array.isArray((candidate as { artifacts?: unknown }).artifacts) ||
+      !(candidate as { artifacts: GitHubArtifact[] }).artifacts.every(
+        (artifact) =>
+          artifact !== null &&
+          typeof artifact === "object" &&
+          typeof artifact.name === "string" &&
+          typeof artifact.expired === "boolean",
+      )
+    ) {
+      return null;
+    }
+    artifacts.push(...(candidate as { artifacts: GitHubArtifact[] }).artifacts);
+    if (!hasNextPage(response.headers)) return artifacts;
+  }
+  return null;
+}
+
+async function checkRemoteDoctor(
+  repository: string,
+  expectedName: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<DoctorDiagnostic[]> {
+  const exact = await listRemoteDoctorArtifacts(
+    repository,
+    environment,
+    expectedName,
+  );
+  if (exact?.some(({ expired, name }) => name === expectedName && !expired)) {
+    return [];
+  }
+  if (exact === null) {
+    return [
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_STATUS_UNAVAILABLE",
+        "Unable to read remote doctor artifacts; verify Actions read permission and retry local doctor.",
+      ),
+    ];
+  }
+  if (exact.some(({ expired, name }) => name === expectedName && expired)) {
+    return [
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_EXPIRED",
+        "The matching remote doctor result expired; dispatch the remote-doctor operation again.",
+      ),
+    ];
+  }
+  const all = await listRemoteDoctorArtifacts(repository, environment);
+  if (all === null) {
+    return [
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_STATUS_UNAVAILABLE",
+        "Unable to read remote doctor artifacts; verify Actions read permission and retry local doctor.",
+      ),
+    ];
+  }
+  if (
+    all.some(
+      ({ expired, name }) =>
+        !expired && name?.startsWith("sandcastle-remote-doctor-failed-"),
+    )
+  ) {
+    return [
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_FAILED",
+        "The latest remote doctor did not pass; inspect its sanitized artifact and dispatch it again after fixing the reported category.",
+      ),
+    ];
+  }
+  if (
+    all.some(
+      ({ name }) =>
+        name?.startsWith("sandcastle-remote-doctor-") && name !== expectedName,
+    )
+  ) {
+    return [
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_STALE",
+        "The remote doctor result does not match this installation, configuration, and workflow; dispatch remote-doctor again.",
+      ),
+    ];
+  }
+  return [
+    diagnostic(
+      "remote-doctor",
+      "REMOTE_DOCTOR_MISSING",
+      "No remote doctor result exists; dispatch the remote-doctor workflow operation before the first Batch.",
+    ),
+  ];
+}
+
 export async function doctor(
   repository: string,
   configPath?: string,
@@ -501,6 +660,37 @@ export async function doctor(
     );
   }
   checks.push(checkResult("github-settings", diagnostics));
+
+  let workflow: string | null = null;
+  try {
+    workflow = await readFile(
+      join(root, ".github", "workflows", "sandcastle.yml"),
+      "utf8",
+    );
+  } catch {
+    diagnostics.push(
+      diagnostic(
+        "remote-doctor",
+        "REMOTE_DOCTOR_BINDING_UNAVAILABLE",
+        "Unable to bind a remote doctor result until the managed workflow is restored.",
+      ),
+    );
+  }
+  if (workflow !== null) {
+    const remoteBinding = createRemoteDoctorBinding(
+      config,
+      workflow,
+      manifest.installerVersion,
+    );
+    diagnostics.push(
+      ...(await checkRemoteDoctor(
+        github.repository,
+        remoteDoctorArtifactName(remoteBinding),
+        environment,
+      )),
+    );
+  }
+  checks.push(checkResult("remote-doctor", diagnostics));
 
   return {
     checks,

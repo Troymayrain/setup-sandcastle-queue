@@ -128,6 +128,7 @@ function install(repository, configPath) {
 }
 
 async function startGitHubServer({
+  artifactState = "current",
   labels = ["Ready-For-Agent", "sandcastle"],
   secrets = ["ANTHROPIC_AUTH_TOKEN"],
   variables = ["ANTHROPIC_BASE_URL"],
@@ -186,6 +187,26 @@ async function startGitHubServer({
     }
     if (request.url === "/repos/acme/widget/branches/main/protection") {
       response.end('{"required_status_checks":{}}');
+      return;
+    }
+    if (request.url?.startsWith("/repos/acme/widget/actions/artifacts?")) {
+      const url = new URL(request.url, "http://github.test");
+      const requestedName = url.searchParams.get("name");
+      let artifacts = [];
+      if (artifactState === "current" && requestedName) {
+        artifacts = [{ expired: false, name: requestedName }];
+      } else if (artifactState === "expired" && requestedName) {
+        artifacts = [{ expired: true, name: requestedName }];
+      } else if (artifactState === "failed" && !requestedName) {
+        artifacts = [
+          { expired: false, name: "sandcastle-remote-doctor-failed-9301" },
+        ];
+      } else if (artifactState === "stale" && !requestedName) {
+        artifacts = [
+          { expired: false, name: "sandcastle-remote-doctor-old-binding" },
+        ];
+      }
+      response.end(JSON.stringify({ artifacts, total_count: artifacts.length }));
       return;
     }
     response.statusCode = 404;
@@ -279,12 +300,146 @@ test("doctor reports a complete installation through read-only local and GitHub 
         { id: "workflow", status: "pass" },
         { id: "github-labels", status: "pass" },
         { id: "github-settings", status: "pass" },
+        { id: "remote-doctor", status: "pass" },
       ],
     );
     assert.deepEqual(output.result.diagnostics, []);
     assert.equal(treeHash(repository), before);
     assert.equal(
       github.requests.every(({ method }) => method === "GET"),
+      true,
+    );
+  } finally {
+    await github.close();
+  }
+});
+
+test("doctor reports a missing remote doctor result with a dispatch next step", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const github = await startGitHubServer({ artifactState: "missing" });
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const diagnostic = JSON.parse(result.stdout).result.diagnostics.find(
+      ({ check }) => check === "remote-doctor",
+    );
+    assert.equal(diagnostic.code, "REMOTE_DOCTOR_MISSING");
+    assert.match(diagnostic.message, /dispatch.+before the first Batch/iu);
+    assert.equal(github.requests.every(({ method }) => method === "GET"), true);
+  } finally {
+    await github.close();
+  }
+});
+
+test("doctor invalidates a remote doctor result bound to old inputs", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const github = await startGitHubServer({ artifactState: "stale" });
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const diagnostic = JSON.parse(result.stdout).result.diagnostics.find(
+      ({ check }) => check === "remote-doctor",
+    );
+    assert.equal(diagnostic.code, "REMOTE_DOCTOR_STALE");
+    assert.match(diagnostic.message, /installation, configuration, and workflow/iu);
+  } finally {
+    await github.close();
+  }
+});
+
+test("doctor reports an expired matching remote doctor result", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const github = await startGitHubServer({ artifactState: "expired" });
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const diagnostic = JSON.parse(result.stdout).result.diagnostics.find(
+      ({ check }) => check === "remote-doctor",
+    );
+    assert.equal(diagnostic.code, "REMOTE_DOCTOR_EXPIRED");
+    assert.match(diagnostic.message, /dispatch.+again/iu);
+  } finally {
+    await github.close();
+  }
+});
+
+test("doctor reports a failed remote doctor artifact separately", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const github = await startGitHubServer({ artifactState: "failed" });
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const diagnostic = JSON.parse(result.stdout).result.diagnostics.find(
+      ({ check }) => check === "remote-doctor",
+    );
+    assert.equal(diagnostic.code, "REMOTE_DOCTOR_FAILED");
+    assert.match(diagnostic.message, /inspect its sanitized artifact/iu);
+  } finally {
+    await github.close();
+  }
+});
+
+test("doctor keeps workflow and remote binding failures diagnostic when the workflow is missing", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  rmSync(join(repository, ".github", "workflows", "sandcastle.yml"));
+  const github = await startGitHubServer();
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const diagnostics = JSON.parse(result.stdout).result.diagnostics;
+    assert.equal(
+      diagnostics.some(
+        ({ check, code }) =>
+          check === "workflow" && code === "WORKFLOW_MISSING",
+      ),
+      true,
+    );
+    assert.equal(
+      diagnostics.some(
+        ({ check, code }) =>
+          check === "remote-doctor" &&
+          code === "REMOTE_DOCTOR_BINDING_UNAVAILABLE",
+      ),
       true,
     );
   } finally {
