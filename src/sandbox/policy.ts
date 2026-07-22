@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { canonicalJson } from "../canonical-json.js";
 import {
@@ -38,13 +38,20 @@ const protectedSkillPrefixes = [
   ".agents/skills/tdd/",
 ];
 
-export type SandboxStage = "agent" | "bootstrap";
+export type SandboxStage = "agent" | "bootstrap" | "verification";
+
+export interface SandboxMount {
+  readOnly: boolean;
+  source: string;
+  target: "/sandcastle/input" | "/sandcastle/output";
+}
 
 export interface SandboxPlan {
   adapter: ProjectConfig["runtime"]["adapter"];
   command: string[];
   credentialBinding: string;
   image: string;
+  mounts: SandboxMount[];
   mode: "preview";
   network: {
     allowedHosts: string[];
@@ -252,11 +259,12 @@ export async function createSandboxPlan(
   sessionId: string | undefined,
   command: string[],
   environment: NodeJS.ProcessEnv = process.env,
+  mounts: SandboxMount[] = [],
 ): Promise<SandboxPlan> {
-  if (stage !== "bootstrap" && stage !== "agent") {
+  if (stage !== "bootstrap" && stage !== "agent" && stage !== "verification") {
     throw configurationError(
       "SANDBOX_STAGE_INVALID",
-      "Sandbox stage must be 'bootstrap' or 'agent'.",
+      "Sandbox stage must be 'bootstrap', 'agent', or 'verification'.",
     );
   }
   const sandboxStage: SandboxStage = stage;
@@ -279,6 +287,24 @@ export async function createSandboxPlan(
       "Sandbox workspace path cannot be represented safely as a Docker mount.",
     );
   }
+  if (
+    mounts.length > 2 ||
+    new Set(mounts.map(({ target }) => target)).size !== mounts.length ||
+    mounts.some(
+      ({ readOnly, source, target }) =>
+        typeof readOnly !== "boolean" ||
+        !isAbsolute(source) ||
+        source.includes(",") ||
+        (target !== "/sandcastle/input" && target !== "/sandcastle/output") ||
+        (target === "/sandcastle/input" && !readOnly) ||
+        (target === "/sandcastle/output" && readOnly),
+    )
+  ) {
+    throw configurationError(
+      "SANDBOX_MOUNT_INVALID",
+      "Sandbox session mounts must use the host-controlled input/output boundaries.",
+    );
+  }
   const [config, session] = await Promise.all([
     readProjectConfig(configPath ?? join(root, ".sandcastle", "config.json")),
     Promise.resolve(sessionEnvironment(environment)),
@@ -290,6 +316,7 @@ export async function createSandboxPlan(
       `${session.token}\u0000${session.baseUrl}\u0000${session.batchId}\u0000${session.scope}`,
     ),
     image,
+    mounts: mounts.map((mount) => ({ ...mount })),
     mode: "preview" as const,
     network: {
       allowedHosts: allowedHosts(config),
@@ -510,6 +537,10 @@ export async function executeSandboxPlan(
         "SANDCASTLE_SCOPE",
         "--env",
         "HOME=/tmp/sandcastle-home",
+        ...plan.mounts.flatMap(({ readOnly, source, target }) => [
+          "--mount",
+          `type=bind,src=${source},dst=${target}${readOnly ? ",readonly" : ""}`,
+        ]),
         "--mount",
         `type=bind,src=${plan.repository},dst=/workspace`,
         "--user",

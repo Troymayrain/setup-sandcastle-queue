@@ -95,10 +95,17 @@ export {
 export type {
   ProtectedPathResult,
   SandboxExecutionResult,
+  SandboxMount,
   SandboxPlan,
   SandboxStage,
 } from "./sandbox/policy.js";
 export { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
+export { processTicket } from "./ticket/process.js";
+export type {
+  ProcessTicketOptions,
+  TicketProcessingResult,
+  TicketReviewFinding,
+} from "./ticket/process.js";
 export type {
   BrokerAuditEvent,
   BrokerSessionCredential,

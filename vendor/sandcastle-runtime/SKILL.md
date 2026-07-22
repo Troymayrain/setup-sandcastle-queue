@@ -14,3 +14,5 @@ This wrapper delegates to the upstream `implement`, `tdd`, and `code-review` ski
 5. Return the real skill outcomes and final worktree diff to the host. Do not commit, push, close issues, update PRs, or write audit records from the sandbox.
 
 Fail closed when the Ticket spec, testing seam, required skill, protected-path policy, or fixed review point is missing.
+
+Write phase evidence to the host-provided `--output` path as JSON. Implementation evidence uses `schemaVersion: 1`, `phase: "implementation"`, `status: "implemented"`, the contract `ticket` and `sessionId`, the exact resulting `head`, and ordered `events`. Record successful `implement` and `tdd` calls as `skill-tool-result` events with their real `toolCallId`; record the first repository edit as `workspace-change`. Review evidence uses `schemaVersion: 1`, `phase: "review"`, the contract `ticket`, `sessionId`, `review.fixedPoint`, `review.head`, and `review.verificationHash`, plus machine-readable `findings` on the `Standards` or `Spec` axis and a successful `code-review` tool event with its real `toolCallId`.

@@ -59,6 +59,7 @@ import {
   parseSandboxCommand,
 } from "./sandbox/policy.js";
 import { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
+import { processTicket } from "./ticket/process.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -155,6 +156,71 @@ async function main(): Promise<void> {
       ]);
     }
     const result = await checkProtectedPaths(process.cwd(), before);
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "process-ticket") {
+    const processConfigPath = optionValue("--config");
+    const ticketSource = optionValue("--ticket");
+    const snapshotPath = optionValue("--snapshot");
+    const seamPath = optionValue("--seam");
+    const beforeHead = optionValue("--before-head");
+    const image = optionValue("--image");
+    const agentDriverSource = optionValue("--agent-driver-json");
+    if (!snapshotPath) {
+      throw new ConfigurationError([
+        {
+          code: "TICKET_SPEC_MISSING",
+          message: "process-ticket requires a trusted --snapshot <path>.",
+          path: "",
+        },
+      ]);
+    }
+    if (!seamPath) {
+      throw new ConfigurationError([
+        {
+          code: "TESTING_SEAM_MISSING",
+          message: "process-ticket requires a pre-confirmed --seam <path>.",
+          path: "",
+        },
+      ]);
+    }
+    if (
+      !processConfigPath ||
+      !ticketSource ||
+      !beforeHead ||
+      !image ||
+      !agentDriverSource
+    ) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message:
+            "process-ticket requires --config, --ticket, --snapshot, --seam, --before-head, --image, and --agent-driver-json.",
+          path: "",
+        },
+      ]);
+    }
+    if (!/^[1-9][0-9]*$/u.test(ticketSource)) {
+      throw new ConfigurationError([
+        {
+          code: "TICKET_NUMBER_INVALID",
+          message: "process-ticket requires a positive Ticket number.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await processTicket(process.cwd(), {
+      agentDriver: parseSandboxCommand(agentDriverSource),
+      beforeHead,
+      configPath: processConfigPath,
+      image,
+      seamPath,
+      snapshotPath,
+      ticket: Number(ticketSource),
+    });
     writeJson({ command, ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
