@@ -18,6 +18,7 @@ import {
   applyGitHubConfiguration,
   previewGitHubConfiguration,
 } from "./github/configure.js";
+import { doctor } from "./doctor.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -128,6 +129,16 @@ async function main(): Promise<void> {
     const result = resolveModelRoles(config);
     writeJson({ command: "resolve-models", ok: true, result, version: VERSION });
     process.exitCode = 0;
+    return;
+  }
+
+  if (command === "doctor") {
+    const result = await doctor(
+      process.cwd(),
+      optionValue("--config"),
+    );
+    writeJson({ command: "doctor", ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 2;
     return;
   }
 

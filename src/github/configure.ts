@@ -71,6 +71,11 @@ export interface GitHubConfigurationApplyResult {
   resources: GitHubConfigurationResource[];
 }
 
+export interface GitHubEnvironmentResourceState {
+  providerSecretConfigured: boolean;
+  providerVariableConfigured: boolean;
+}
+
 interface GitHubResponse<T> {
   data: T | null;
   headers: Headers;
@@ -505,5 +510,45 @@ export async function applyGitHubConfiguration(
     mode: "applied",
     repository: preview.repository,
     resources: preview.resources,
+  };
+}
+
+export async function inspectGitHubEnvironmentResources(
+  repository: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<GitHubEnvironmentResourceState> {
+  const githubToken = environment.GITHUB_TOKEN;
+  if (!githubToken) {
+    throw configurationError(
+      "GITHUB_TOKEN_MISSING",
+      "GITHUB_TOKEN is required to inspect GitHub Environment resources.",
+    );
+  }
+  const client = new GitHubClient(
+    environment.GITHUB_API_URL ?? "https://api.github.com",
+    githubToken,
+  );
+  const environmentPath = `/repos/${repository}/environments/sandcastle`;
+  const [variablesResponse, secretsResponse] = await Promise.all([
+    client.get<{ variables?: Array<{ name: string }> }>(
+      `${environmentPath}/variables?per_page=100&page=1`,
+      [200, 404],
+    ),
+    client.get<{ secrets?: Array<{ name: string }> }>(
+      `${environmentPath}/secrets?per_page=100&page=1`,
+      [200, 404],
+    ),
+  ]);
+  return {
+    providerSecretConfigured: Boolean(
+      secretsResponse.data?.secrets?.some(
+        ({ name }) => name === "ANTHROPIC_AUTH_TOKEN",
+      ),
+    ),
+    providerVariableConfigured: Boolean(
+      variablesResponse.data?.variables?.some(
+        ({ name }) => name === "ANTHROPIC_BASE_URL",
+      ),
+    ),
   };
 }

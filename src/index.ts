@@ -12,6 +12,12 @@ export type {
   ModelRoleResolution,
   ProjectConfig,
 } from "./config.js";
+export { doctor } from "./doctor.js";
+export type {
+  DoctorCheck,
+  DoctorDiagnostic,
+  DoctorResult,
+} from "./doctor.js";
 export {
   createInstallPlan,
   resumePendingInstallPlan,
@@ -23,6 +29,7 @@ export { proposeRuntime } from "./runtime/detect.js";
 export type { BuiltInAdapter, RuntimeProposal } from "./runtime/detect.js";
 export {
   applyGitHubConfiguration,
+  inspectGitHubEnvironmentResources,
   previewGitHubConfiguration,
   validateGitHubResourceConfirmation,
 } from "./github/configure.js";
@@ -32,6 +39,7 @@ export type {
   GitHubConfigurationPreview,
   GitHubConfigurationResource,
   GitHubConfirmationCategory,
+  GitHubEnvironmentResourceState,
 } from "./github/configure.js";
 export type {
   AssetPrecondition,
