@@ -6,11 +6,12 @@ import {
   InfrastructureError,
   readProjectConfig,
 } from "./config.js";
-import { createInstallPlan } from "./installer/plan.js";
 import {
+  createInstallPlan,
   resumePendingInstallPlan,
   savePendingInstallPlan,
 } from "./installer/plan.js";
+import { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -83,6 +84,25 @@ async function main(): Promise<void> {
       }
     }
     writeJson({ command: "plan", ok: true, result: plan, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "install") {
+    const planPath = optionValue("--plan");
+    const confirmation = optionValue("--confirm");
+    if (!planPath || !confirmation) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "install requires --plan <path> and --confirm <planHash>.",
+          path: "",
+        },
+      ]);
+    }
+    const plan = await readInstallPlan(planPath);
+    const result = await applyInstallPlan(process.cwd(), plan, confirmation);
+    writeJson({ command: "install", ok: true, result, version: VERSION });
     process.exitCode = 0;
   }
 }

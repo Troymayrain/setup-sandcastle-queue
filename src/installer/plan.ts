@@ -44,6 +44,7 @@ export interface AssetPrecondition {
 
 export interface InstallPlan {
   assets: InstallPlanAsset[];
+  config: ProjectConfig;
   installationState: InstallationState;
   installerVersion: string;
   patch: string;
@@ -124,12 +125,23 @@ async function git(
   return result.stdout;
 }
 
-async function pendingPlanPath(repository: string): Promise<string> {
-  const root = (await git(repository, ["rev-parse", "--show-toplevel"])).trim();
+export async function resolveRepositoryRoot(repository: string): Promise<string> {
+  return (await git(repository, ["rev-parse", "--show-toplevel"])).trim();
+}
+
+export async function resolveRepositoryGitPath(
+  repository: string,
+  relativePath: string,
+): Promise<string> {
+  const root = await resolveRepositoryRoot(repository);
   const gitPath = (
-    await git(root, ["rev-parse", "--git-path", "sandcastle/pending-plan.json"])
+    await git(root, ["rev-parse", "--git-path", relativePath])
   ).trim();
   return isAbsolute(gitPath) ? gitPath : resolve(root, gitPath);
+}
+
+async function pendingPlanPath(repository: string): Promise<string> {
+  return resolveRepositoryGitPath(repository, "sandcastle/pending-plan.json");
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -160,7 +172,7 @@ async function determineInstallationState(
   return collisions.some(Boolean) ? "unmanaged" : "fresh";
 }
 
-async function assetPrecondition(
+export async function readAssetPrecondition(
   repository: string,
   asset: CandidateAsset,
 ): Promise<AssetPrecondition> {
@@ -311,6 +323,8 @@ async function renderPatch(
     }
     return result.stdout
       .replaceAll("a/base/", "a/")
+      .replaceAll("a/candidate/", "a/")
+      .replaceAll("b/base/", "b/")
       .replaceAll("b/candidate/", "b/");
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });
@@ -321,15 +335,16 @@ export async function createInstallPlan(
   repository: string,
   config: ProjectConfig,
 ): Promise<InstallPlan> {
-  const root = (await git(repository, ["rev-parse", "--show-toplevel"])).trim();
+  const normalizedConfig = JSON.parse(canonicalJson(config)) as ProjectConfig;
+  const root = await resolveRepositoryRoot(repository);
   const [head, index] = await Promise.all([
     git(root, ["rev-parse", "HEAD"]),
     git(root, ["ls-files", "--stage", "-z"]),
   ]);
-  const assets = renderCandidateAssets(config);
+  const assets = renderCandidateAssets(normalizedConfig);
   const [installationState, preconditions, patch] = await Promise.all([
     determineInstallationState(root, assets),
-    Promise.all(assets.map((asset) => assetPrecondition(root, asset))),
+    Promise.all(assets.map((asset) => readAssetPrecondition(root, asset))),
     renderPatch(root, assets),
   ]);
   const planWithoutHash = {
@@ -338,6 +353,7 @@ export async function createInstallPlan(
       path: asset.path,
       sha256: sha256(asset.content),
     })),
+    config: normalizedConfig,
     installationState,
     installerVersion: VERSION,
     patch,

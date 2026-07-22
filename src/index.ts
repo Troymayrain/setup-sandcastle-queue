@@ -15,6 +15,8 @@ export {
   resumePendingInstallPlan,
   savePendingInstallPlan,
 } from "./installer/plan.js";
+export { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
+export type { InstallResult } from "./installer/apply.js";
 export type {
   AssetPrecondition,
   InstallationState,
