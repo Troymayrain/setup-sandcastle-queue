@@ -13,8 +13,11 @@
     }
   },
   "files": [
+    "SKILL.md",
+    "agents",
     "dist",
-    "schema"
+    "schema",
+    "scripts"
   ],
   "engines": {
     "node": ">=22 <23"

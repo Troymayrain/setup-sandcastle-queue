@@ -1,0 +1,4 @@
+interface:
+  display_name: "Setup Sandcastle Queue"
+  short_description: "Plan, install, and maintain Sandcastle Queue"
+  default_prompt: "Use $setup-sandcastle-queue to plan or apply a deterministic Sandcastle Queue installation in this repository."
