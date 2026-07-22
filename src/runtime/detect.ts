@@ -170,6 +170,96 @@ function assertValidNpmLock(
   }
 }
 
+interface GoRequirement {
+  module: string;
+  version: string;
+}
+
+function validGoModulePath(value: string): boolean {
+  return (
+    value.length <= 512 &&
+    /^[A-Za-z0-9][A-Za-z0-9._~+/-]*$/u.test(value) &&
+    !value.includes("..")
+  );
+}
+
+function exactGoModuleVersion(value: string): boolean {
+  return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(
+    value,
+  );
+}
+
+function parseGoRequirements(source: string): GoRequirement[] {
+  const requirements: GoRequirement[] = [];
+  let inBlock = false;
+  for (const sourceLine of source.split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (line === "require (") {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && line === ")") {
+      inBlock = false;
+      continue;
+    }
+    const candidate = inBlock
+      ? line
+      : line.startsWith("require ")
+        ? line.slice("require ".length).trim()
+        : null;
+    if (candidate === null || candidate.length === 0 || candidate.startsWith("//")) {
+      continue;
+    }
+    const fields = candidate.replace(/\s+\/\/\s+indirect$/u, "").split(/\s+/u);
+    if (
+      fields.length !== 2 ||
+      !fields[0] ||
+      !fields[1] ||
+      !validGoModulePath(fields[0]) ||
+      !exactGoModuleVersion(fields[1])
+    ) {
+      throw detectionError(
+        "GO_MODULE_INVALID",
+        "Go module requirements must use exact module versions.",
+      );
+    }
+    requirements.push({ module: fields[0], version: fields[1] });
+  }
+  if (inBlock) {
+    throw detectionError(
+      "GO_MODULE_INVALID",
+      "The Go module requirement block is incomplete.",
+    );
+  }
+  return requirements;
+}
+
+function assertValidGoSum(source: string, requirements: GoRequirement[]): void {
+  const checksums = new Set<string>();
+  const lines = source
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (
+    lines.some((line) => {
+      const match = line.match(
+        /^(\S+) (v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\/go\.mod)? h1:[A-Za-z0-9+/]{43}=$/u,
+      );
+      if (!match?.[1] || !match[2] || !validGoModulePath(match[1])) return true;
+      checksums.add(`${match[1]}@${match[2]}`);
+      return false;
+    }) ||
+    requirements.some(
+      ({ module, version }) => !checksums.has(`${module}@${version}`),
+    )
+  ) {
+    throw detectionError(
+      "GO_SUM_INVALID",
+      "go.sum must contain valid module checksums for every required dependency.",
+    );
+  }
+}
+
 async function nodeProposal(
   repository: string,
   confirmation?: RuntimeConfirmation,
@@ -283,6 +373,100 @@ async function nodeProposal(
       confirmed: confirmation !== undefined,
       signals: versions.map(({ source }) => source),
       version: confirmation?.version ?? (distinctVersions[0] as string),
+    },
+  };
+}
+
+async function goProposal(
+  repository: string,
+  confirmation?: RuntimeConfirmation,
+): Promise<RuntimeProposal | null> {
+  const modulePath = join(repository, "go.mod");
+  if (!(await pathExists(modulePath))) return null;
+  const moduleSource = await readFile(modulePath, "utf8");
+  const moduleName = moduleSource.match(/^module\s+(\S+)\s*$/mu)?.[1];
+  if (!moduleName || !validGoModulePath(moduleName)) {
+    throw detectionError(
+      "GO_MODULE_INVALID",
+      "go.mod must declare one valid module path.",
+    );
+  }
+  const requirements = parseGoRequirements(moduleSource);
+  const sumPath = join(repository, "go.sum");
+  const hasSum = await pathExists(sumPath);
+  if (requirements.length > 0 && !hasSum) {
+    throw detectionError(
+      "GO_SUM_REQUIRED",
+      "Go modules with dependencies require go.sum checksum evidence.",
+    );
+  }
+  const sumSource = hasSum ? await readFile(sumPath, "utf8") : "";
+  if (hasSum) assertValidGoSum(sumSource, requirements);
+
+  const versions: Array<{ source: string; version: string }> = [];
+  const goVersion = moduleSource.match(/^go\s+(\S+)\s*$/mu)?.[1];
+  if (!goVersion || !exactVersion(goVersion)) {
+    throw detectionError(
+      "RUNTIME_VERSION_INVALID",
+      "Every detected runtime declaration must use an exact x.y.z version.",
+    );
+  }
+  versions.push({ source: "go.mod#go", version: exactVersion(goVersion)! });
+  const toolchain = moduleSource.match(/^toolchain\s+go(\S+)\s*$/mu)?.[1];
+  if (toolchain) {
+    const version = exactVersion(toolchain);
+    if (!version) {
+      throw detectionError(
+        "RUNTIME_VERSION_INVALID",
+        "Every detected runtime declaration must use an exact x.y.z version.",
+      );
+    }
+    versions.push({ source: "go.mod#toolchain", version });
+  }
+  const distinctVersions = [...new Set(versions.map(({ version }) => version))];
+  if (
+    confirmation &&
+    (confirmation.adapter !== "go-module" ||
+      !distinctVersions.includes(confirmation.version))
+  ) {
+    throw detectionError(
+      "RUNTIME_CONFIRMATION_INVALID",
+      "The confirmed runtime does not match a detected project declaration.",
+    );
+  }
+  if (distinctVersions.length !== 1 && !confirmation) {
+    throw detectionError(
+      "RUNTIME_VERSION_CONFLICT",
+      "Project runtime declarations disagree on the exact Go version.",
+    );
+  }
+  return {
+    adapterPlan: {
+      bootstrap: [
+        { argv: ["go", "mod", "download"] },
+        { argv: ["go", "mod", "verify"] },
+      ],
+      environment: {
+        inputs: [
+          environmentInput("go.mod", moduleSource),
+          ...(hasSum ? [environmentInput("go.sum", sumSource)] : []),
+        ],
+      },
+      networkHosts: [
+        "proxy.golang.org",
+        "storage.googleapis.com",
+        "sum.golang.org",
+      ],
+    },
+    commands: {
+      tests: [{ argv: ["go", "test", "./..."] }],
+      verification: [{ argv: ["go", "vet", "./..."] }],
+    },
+    runtime: {
+      adapter: "go-module",
+      confirmed: confirmation !== undefined,
+      signals: versions.map(({ source }) => source),
+      version: confirmation?.version ?? distinctVersions[0]!,
     },
   };
 }
@@ -485,6 +669,8 @@ export async function proposeRuntime(
     const proposal =
       confirmation.adapter === "node-npm"
         ? await nodeProposal(root, confirmation)
+        : confirmation.adapter === "go-module"
+          ? await goProposal(root, confirmation)
         : confirmation.adapter === "python-pip" ||
             confirmation.adapter === "python-uv"
           ? await pythonProposal(root, confirmation)
@@ -499,7 +685,7 @@ export async function proposeRuntime(
   }
 
   const proposals = (
-    await Promise.all([nodeProposal(root), pythonProposal(root)])
+    await Promise.all([goProposal(root), nodeProposal(root), pythonProposal(root)])
   ).filter((proposal): proposal is RuntimeProposal => proposal !== null);
   if (proposals.length > 1) {
     throw detectionError(
