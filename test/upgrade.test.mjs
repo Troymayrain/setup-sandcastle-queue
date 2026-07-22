@@ -459,3 +459,98 @@ test("upgrade accepts only an exact release available in the current CLI", () =>
   );
   assert.equal(treeHash(repository), before);
 });
+
+test("rollback regenerates an exact historical release with upgrade-equivalent checks", () => {
+  const repository = createRepository();
+  install(repository);
+  const manifestPath = join(repository, ".sandcastle", "installation.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const workflowPath = join(
+    repository,
+    ".github",
+    "workflows",
+    "sandcastle.yml",
+  );
+  writeFileSync(
+    workflowPath,
+    "name: Sandcastle Queue 0.2.0\non:\n  workflow_dispatch:\npermissions: {}\n",
+  );
+  manifest.installerVersion = "0.2.0";
+  manifest.templateVersion = "2.0.0";
+  manifest.managedAssets[".github/workflows/sandcastle.yml"].sha256 =
+    fileHash(workflowPath);
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const previewed = runCli(["rollback", "--target", "0.1.0"], repository);
+
+  assert.equal(previewed.status, 0, previewed.stderr);
+  const preview = JSON.parse(previewed.stdout).result;
+  assert.equal(preview.mode, "preview");
+  assert.equal(preview.plan.rollback.targetRelease, "0.1.0");
+  assert.equal(preview.plan.rollback.fromInstallerVersion, "0.2.0");
+  assert.deepEqual(preview.conflicts, []);
+  assert.match(preview.plan.patch, /-name: Sandcastle Queue 0\.2\.0/u);
+  const planPath = join(
+    mkdtempSync(join(tmpdir(), "sandcastle-rollback-plan-")),
+    "plan.json",
+  );
+  writeFileSync(planPath, `${JSON.stringify(preview.plan)}\n`);
+
+  const rolledBack = runCli(
+    ["rollback", "--plan", planPath, "--confirm", preview.plan.planHash],
+    repository,
+  );
+
+  assert.equal(rolledBack.status, 0, rolledBack.stderr);
+  assert.equal(JSON.parse(rolledBack.stdout).result.changed, true);
+  assert.match(readFileSync(workflowPath, "utf8"), /Managed by setup-sandcastle/u);
+  assert.equal(
+    JSON.parse(readFileSync(manifestPath, "utf8")).installerVersion,
+    "0.1.0",
+  );
+});
+
+test("rollback blocks locally modified managed assets without force overwrite", () => {
+  const repository = createRepository();
+  install(repository);
+  const manifestPath = join(repository, ".sandcastle", "installation.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.installerVersion = "0.2.0";
+  manifest.templateVersion = "2.0.0";
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const workflowPath = join(
+    repository,
+    ".github",
+    "workflows",
+    "sandcastle.yml",
+  );
+  writeFileSync(
+    workflowPath,
+    `${readFileSync(workflowPath, "utf8")}# locally modified future workflow\n`,
+  );
+  const before = treeHash(repository);
+
+  const previewed = runCli(["rollback", "--target", "0.1.0"], repository);
+  assert.equal(previewed.status, 0, previewed.stderr);
+  const plan = JSON.parse(previewed.stdout).result.plan;
+  assert.deepEqual(plan.rollback.conflicts.map(({ path }) => path), [
+    ".github/workflows/sandcastle.yml",
+  ]);
+  const planPath = join(
+    mkdtempSync(join(tmpdir(), "sandcastle-conflicted-rollback-plan-")),
+    "plan.json",
+  );
+  writeFileSync(planPath, `${JSON.stringify(plan)}\n`);
+
+  const rolledBack = runCli(
+    ["rollback", "--plan", planPath, "--confirm", plan.planHash],
+    repository,
+  );
+
+  assert.equal(rolledBack.status, 2, rolledBack.stderr);
+  assert.equal(
+    JSON.parse(rolledBack.stdout).diagnostics[0].code,
+    "ROLLBACK_CONFLICT",
+  );
+  assert.equal(treeHash(repository), before);
+});

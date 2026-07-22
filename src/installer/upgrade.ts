@@ -34,6 +34,8 @@ export interface UpgradePreview {
   }>;
 }
 
+export type RollbackPreview = UpgradePreview;
+
 interface InstalledManifest {
   installerVersion: string;
   managedAssets: Record<string, { sha256: string }>;
@@ -199,10 +201,11 @@ async function inspectTargetAssets(
   };
 }
 
-export async function createUpgradePreview(
+async function createReleaseTransitionPreview(
   repository: string,
   targetRelease: string,
   targetConfigPath?: string,
+  operation: "rollback" | "upgrade" = "upgrade",
 ): Promise<UpgradePreview> {
   assertExactTargetRelease(targetRelease);
   const root = await resolveRepositoryRoot(repository);
@@ -229,7 +232,7 @@ export async function createUpgradePreview(
     manifest,
     runtimeWrapper,
   );
-  const upgrade: UpgradePlanMetadata = {
+  const transition: UpgradePlanMetadata = {
     configMigration,
     conflicts: inspection.conflicts,
     fromInstallerVersion: manifest.installerVersion,
@@ -242,12 +245,14 @@ export async function createUpgradePreview(
       ? [".sandcastle/config.json"]
       : [],
     preserveExistingProjectAssets: true,
-    upgrade,
+    ...(operation === "upgrade"
+      ? { upgrade: transition }
+      : { rollback: transition }),
   });
   if (plan.installationState !== "managed") {
     throw upgradeError(
       "MANAGED_INSTALLATION_REQUIRED",
-      "upgrade requires an existing managed Sandcastle installation.",
+      `${operation} requires an existing managed Sandcastle installation.`,
     );
   }
   return {
@@ -260,4 +265,30 @@ export async function createUpgradePreview(
         )
       : inspection.preservedProjectPaths,
   };
+}
+
+export async function createUpgradePreview(
+  repository: string,
+  targetRelease: string,
+  targetConfigPath?: string,
+): Promise<UpgradePreview> {
+  return createReleaseTransitionPreview(
+    repository,
+    targetRelease,
+    targetConfigPath,
+    "upgrade",
+  );
+}
+
+export async function createRollbackPreview(
+  repository: string,
+  targetRelease: string,
+  targetConfigPath?: string,
+): Promise<RollbackPreview> {
+  return createReleaseTransitionPreview(
+    repository,
+    targetRelease,
+    targetConfigPath,
+    "rollback",
+  );
 }

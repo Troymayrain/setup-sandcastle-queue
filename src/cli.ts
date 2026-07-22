@@ -15,6 +15,7 @@ import {
 import {
   applyAdoptPlan,
   applyInstallPlan,
+  applyRollbackPlan,
   applyUpgradePlan,
   readInstallPlan,
 } from "./installer/apply.js";
@@ -29,7 +30,15 @@ import {
   inspectLegacyQuiescence,
   parseLegacyPullRequestOptOut,
 } from "./installer/adopt.js";
-import { createUpgradePreview } from "./installer/upgrade.js";
+import {
+  createRollbackPreview,
+  createUpgradePreview,
+} from "./installer/upgrade.js";
+import {
+  applyUninstallPlan,
+  createUninstallPreview,
+  readUninstallPlan,
+} from "./installer/uninstall.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -244,6 +253,78 @@ async function main(): Promise<void> {
       optionValue("--config"),
     );
     writeJson({ command: "upgrade", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "rollback") {
+    const rollbackPlanPath = optionValue("--plan");
+    const rollbackConfirmation = optionValue("--confirm");
+    if (rollbackPlanPath || rollbackConfirmation) {
+      if (!rollbackPlanPath || !rollbackConfirmation) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "rollback apply requires --plan <path> and --confirm <planHash>.",
+            path: "",
+          },
+        ]);
+      }
+      const plan = await readInstallPlan(rollbackPlanPath);
+      const result = await applyRollbackPlan(
+        process.cwd(),
+        plan,
+        rollbackConfirmation,
+      );
+      writeJson({ command: "rollback", ok: true, result, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const targetRelease = optionValue("--target");
+    if (!targetRelease) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "rollback requires --target <exact-release>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await createRollbackPreview(
+      process.cwd(),
+      targetRelease,
+      optionValue("--config"),
+    );
+    writeJson({ command: "rollback", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "uninstall") {
+    const uninstallPlanPath = optionValue("--plan");
+    const uninstallConfirmation = optionValue("--confirm");
+    if (uninstallPlanPath || uninstallConfirmation) {
+      if (!uninstallPlanPath || !uninstallConfirmation) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "uninstall apply requires --plan <path> and --confirm <planHash>.",
+            path: "",
+          },
+        ]);
+      }
+      const plan = await readUninstallPlan(uninstallPlanPath);
+      const result = await applyUninstallPlan(
+        process.cwd(),
+        plan,
+        uninstallConfirmation,
+      );
+      writeJson({ command: "uninstall", ok: true, result, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const result = await createUninstallPreview(process.cwd());
+    writeJson({ command: "uninstall", ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }

@@ -26,6 +26,7 @@ import {
   resolveRepositoryRoot,
   type AssetPrecondition,
   type InstallPlan,
+  type UpgradePlanMetadata,
 } from "./plan.js";
 import {
   renderCandidateAssets,
@@ -200,6 +201,7 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
     "patch",
     "planHash",
     "preconditions",
+    ...(candidate.rollback === undefined ? [] : ["rollback"]),
     "schemaVersion",
     "templateVersion",
     ...(candidate.upgrade === undefined ? [] : ["upgrade"]),
@@ -225,10 +227,15 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
     throw planError("PLAN_INVALID", "Confirmed installation plan has an invalid shape.");
   }
 
-  if (candidate.adoption !== undefined && candidate.upgrade !== undefined) {
+  const operationCount = [
+    candidate.adoption,
+    candidate.rollback,
+    candidate.upgrade,
+  ].filter((value) => value !== undefined).length;
+  if (operationCount > 1) {
     throw planError(
       "PLAN_INVALID",
-      "Confirmed plan cannot combine adoption and upgrade operations.",
+      "Confirmed plan cannot combine lifecycle operations.",
     );
   }
   if (candidate.adoption !== undefined) {
@@ -236,6 +243,9 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
   }
   if (candidate.upgrade !== undefined) {
     assertUpgradeMetadata(candidate.upgrade);
+  }
+  if (candidate.rollback !== undefined) {
+    assertUpgradeMetadata(candidate.rollback);
   }
 
   if (sha256(canonicalJson(planWithoutHash(candidate))) !== candidate.planHash) {
@@ -246,7 +256,11 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
   }
 
   const config = validateProjectConfig(candidate.config);
-  const operation = (candidate.adoption ?? candidate.upgrade) as
+  const operation = (
+    candidate.adoption ??
+    candidate.rollback ??
+    candidate.upgrade
+  ) as
     | { runtimeWrapper: string }
     | undefined;
   const renderedAssets = renderCandidateAssets(config, {
@@ -288,7 +302,7 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
       "Confirmed installation plan contains invalid target preconditions.",
     );
   }
-  const upgrade = candidate.upgrade as
+  const upgrade = (candidate.rollback ?? candidate.upgrade) as
     | {
         configMigration: { fromSha256: string; toSha256: string } | null;
       }
@@ -541,6 +555,12 @@ export async function applyInstallPlan(
       "An upgrade plan must be applied through the upgrade lifecycle.",
     );
   }
+  if (plan.rollback) {
+    throw planError(
+      "ROLLBACK_PLAN_REQUIRES_ROLLBACK",
+      "A rollback plan must be applied through the rollback lifecycle.",
+    );
+  }
   if (plan.installationState === "unmanaged") {
     throw planError(
       "UNMANAGED_INSTALLATION",
@@ -628,34 +648,37 @@ export async function applyAdoptPlan(
   };
 }
 
-export async function applyUpgradePlan(
+async function applyReleaseTransitionPlan(
   repository: string,
   plan: InstallPlan,
   confirmation: string,
+  operation: "rollback" | "upgrade",
 ): Promise<InstallResult> {
   assertPlanEnvelope(plan);
-  if (!plan.upgrade || plan.installationState !== "managed") {
+  const metadata = plan[operation] as UpgradePlanMetadata | undefined;
+  const operationName = operation === "upgrade" ? "Upgrade" : "Rollback";
+  if (!metadata || plan.installationState !== "managed") {
     throw planError(
-      "UPGRADE_PLAN_INVALID",
-      "The confirmed plan is not a managed upgrade plan.",
+      `${operation.toUpperCase()}_PLAN_INVALID`,
+      `The confirmed plan is not a managed ${operation} plan.`,
     );
   }
   if (confirmation !== plan.planHash) {
     throw planError(
       "PLAN_NOT_CONFIRMED",
-      "Upgrade requires explicit confirmation of the exact plan hash.",
+      `${operationName} requires explicit confirmation of the exact plan hash.`,
     );
   }
-  if (plan.upgrade.conflicts.length > 0) {
+  if (metadata.conflicts.length > 0) {
     throw planError(
-      "UPGRADE_CONFLICT",
-      "Managed-file conflicts must be resolved before upgrade can be applied.",
+      `${operation.toUpperCase()}_CONFLICT`,
+      `Managed-file conflicts must be resolved before ${operation} can be applied.`,
     );
   }
 
   const root = await resolveRepositoryRoot(repository);
   const assets = renderCandidateAssets(plan.config, {
-    runtimeWrapper: plan.upgrade.runtimeWrapper,
+    runtimeWrapper: metadata.runtimeWrapper,
   });
   const actualPreconditions = await Promise.all(
     assets.map((asset) => readAssetPrecondition(root, asset)),
@@ -668,7 +691,7 @@ export async function applyUpgradePlan(
   ) {
     throw planError(
       "PLAN_STALE",
-      "Target assets changed after the upgrade plan was created.",
+      `Target assets changed after the ${operation} plan was created.`,
     );
   }
 
@@ -676,7 +699,7 @@ export async function applyUpgradePlan(
     root,
     assets,
     plan.preconditions.assets,
-    plan.upgrade.configMigration
+    metadata.configMigration
       ? new Set([".sandcastle/config.json"])
       : new Set(),
   );
@@ -685,4 +708,20 @@ export async function applyUpgradePlan(
     filesWritten,
     planHash: plan.planHash,
   };
+}
+
+export async function applyUpgradePlan(
+  repository: string,
+  plan: InstallPlan,
+  confirmation: string,
+): Promise<InstallResult> {
+  return applyReleaseTransitionPlan(repository, plan, confirmation, "upgrade");
+}
+
+export async function applyRollbackPlan(
+  repository: string,
+  plan: InstallPlan,
+  confirmation: string,
+): Promise<InstallResult> {
+  return applyReleaseTransitionPlan(repository, plan, confirmation, "rollback");
 }

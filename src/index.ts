@@ -28,8 +28,24 @@ export {
   inspectLegacyQuiescence,
   parseLegacyPullRequestOptOut,
 } from "./installer/adopt.js";
-export { createUpgradePreview } from "./installer/upgrade.js";
-export type { UpgradePreview } from "./installer/upgrade.js";
+export {
+  createRollbackPreview,
+  createUpgradePreview,
+} from "./installer/upgrade.js";
+export type { RollbackPreview, UpgradePreview } from "./installer/upgrade.js";
+export {
+  applyUninstallPlan,
+  createUninstallPreview,
+  readUninstallPlan,
+} from "./installer/uninstall.js";
+export type {
+  UninstallConflict,
+  UninstallPlan,
+  UninstallPreservedEntry,
+  UninstallPreview,
+  UninstallRemoval,
+  UninstallResult,
+} from "./installer/uninstall.js";
 export type {
   AdoptionMigration,
   AdoptionPreview,
@@ -38,6 +54,7 @@ export type {
 export {
   applyAdoptPlan,
   applyInstallPlan,
+  applyRollbackPlan,
   applyUpgradePlan,
   readInstallPlan,
 } from "./installer/apply.js";
@@ -67,6 +84,7 @@ export type {
   InstallationState,
   InstallPlan,
   InstallPlanAsset,
+  RollbackPlanMetadata,
   UpgradeConflict,
   UpgradePlanMetadata,
 } from "./installer/plan.js";

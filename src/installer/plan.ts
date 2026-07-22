@@ -78,10 +78,13 @@ export interface UpgradePlanMetadata {
   targetRelease: string;
 }
 
+export type RollbackPlanMetadata = UpgradePlanMetadata;
+
 export interface CreateInstallPlanOptions {
   adoption?: AdoptionPlanMetadata;
   overwrittenProjectPaths?: string[];
   preserveExistingProjectAssets?: boolean;
+  rollback?: RollbackPlanMetadata;
   upgrade?: UpgradePlanMetadata;
 }
 
@@ -100,6 +103,7 @@ export interface InstallPlan {
   };
   schemaVersion: 1;
   templateVersion: string;
+  rollback?: RollbackPlanMetadata;
   upgrade?: UpgradePlanMetadata;
 }
 
@@ -474,18 +478,25 @@ export async function createInstallPlan(
     git(root, ["rev-parse", "HEAD"]),
     git(root, ["ls-files", "--stage", "-z"]),
   ]);
-  if (options.adoption && options.upgrade) {
+  const operationCount = [
+    options.adoption,
+    options.rollback,
+    options.upgrade,
+  ].filter(Boolean).length;
+  if (operationCount > 1) {
     throw new ConfigurationError([
       {
         code: "PLAN_OPERATION_INVALID",
-        message: "An installation plan cannot combine adoption and upgrade metadata.",
+        message: "An installation plan cannot combine lifecycle operation metadata.",
         path: "",
       },
     ]);
   }
   const assets = renderCandidateAssets(normalizedConfig, {
     runtimeWrapper:
-      options.adoption?.runtimeWrapper ?? options.upgrade?.runtimeWrapper,
+      options.adoption?.runtimeWrapper ??
+      options.rollback?.runtimeWrapper ??
+      options.upgrade?.runtimeWrapper,
   });
   const overwrittenProjectPaths = new Set(
     options.overwrittenProjectPaths ?? [],
@@ -519,6 +530,7 @@ export async function createInstallPlan(
     },
     schemaVersion: 1 as const,
     templateVersion: TEMPLATE_VERSION,
+    ...(options.rollback ? { rollback: options.rollback } : {}),
     ...(options.upgrade ? { upgrade: options.upgrade } : {}),
   };
 
