@@ -6,8 +6,19 @@ import {
   InfrastructureError,
   readProjectConfig,
 } from "./config.js";
+import { createInstallPlan } from "./installer/plan.js";
+import {
+  resumePendingInstallPlan,
+  savePendingInstallPlan,
+} from "./installer/plan.js";
 
-const [command, option, configPath] = process.argv.slice(2);
+const arguments_ = process.argv.slice(2);
+const [command, option, configPath] = arguments_;
+
+function optionValue(name: string): string | undefined {
+  const index = arguments_.indexOf(name);
+  return index >= 0 ? arguments_[index + 1] : undefined;
+}
 
 function writeJson(value: object): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -47,6 +58,32 @@ async function main(): Promise<void> {
       version: VERSION,
     });
     process.exitCode = 2;
+    return;
+  }
+
+  if (command === "plan") {
+    let plan;
+    if (arguments_.includes("--resume-pending")) {
+      plan = await resumePendingInstallPlan(process.cwd());
+    } else {
+      const planConfigPath = optionValue("--config");
+      if (!planConfigPath) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "plan requires --config <path> or --resume-pending.",
+            path: "",
+          },
+        ]);
+      }
+      const config = await readProjectConfig(planConfigPath);
+      plan = await createInstallPlan(process.cwd(), config);
+      if (arguments_.includes("--save-pending")) {
+        await savePendingInstallPlan(process.cwd(), config, plan);
+      }
+    }
+    writeJson({ command: "plan", ok: true, result: plan, version: VERSION });
+    process.exitCode = 0;
   }
 }
 

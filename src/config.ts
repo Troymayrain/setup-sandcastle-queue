@@ -190,6 +190,10 @@ export async function readProjectConfig(path: string): Promise<ProjectConfig> {
     ]);
   }
 
+  return validateProjectConfig(candidate);
+}
+
+export function validateProjectConfig(candidate: unknown): ProjectConfig {
   if (!validateSchema(candidate)) {
     const diagnostics = (validateSchema.errors ?? [])
       .map(normalizeSchemaError)
