@@ -67,6 +67,21 @@ export {
   previewGitHubConfiguration,
   validateGitHubResourceConfirmation,
 } from "./github/configure.js";
+export {
+  computeTicketFrontier,
+  parseParentMembership,
+  readSpecSnapshot,
+  verifySpecSnapshot,
+} from "./github/frontier.js";
+export type {
+  FrontierResult,
+  FrontierTicket,
+  SpecCommentSnapshot,
+  SpecIssueSnapshot,
+  SpecVerificationResult,
+  TicketFrontierStatus,
+  TicketSpecSnapshot,
+} from "./github/frontier.js";
 export type {
   GitHubConfigurationApplyResult,
   GitHubConfigurationDiagnostic,

@@ -39,6 +39,11 @@ import {
   createUninstallPreview,
   readUninstallPlan,
 } from "./installer/uninstall.js";
+import {
+  computeTicketFrontier,
+  readSpecSnapshot,
+  verifySpecSnapshot,
+} from "./github/frontier.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -325,6 +330,45 @@ async function main(): Promise<void> {
     }
     const result = await createUninstallPreview(process.cwd());
     writeJson({ command: "uninstall", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "status") {
+    const parent = optionValue("--parent");
+    if (!parent || !/^[1-9][0-9]*$/u.test(parent)) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "status requires --parent <issue-number>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await computeTicketFrontier(
+      process.cwd(),
+      Number(parent),
+      optionValue("--config"),
+    );
+    writeJson({ command: "status", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "verify-spec") {
+    const snapshotPath = optionValue("--snapshot");
+    if (!snapshotPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-spec requires --snapshot <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const snapshot = await readSpecSnapshot(snapshotPath);
+    const result = await verifySpecSnapshot(process.cwd(), snapshot);
+    writeJson({ command: "verify-spec", ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }
