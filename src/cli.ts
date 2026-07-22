@@ -60,6 +60,10 @@ import {
 } from "./sandbox/policy.js";
 import { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
 import { processTicket } from "./ticket/process.js";
+import {
+  publishTicket,
+  readTicketPublicationInputs,
+} from "./ticket/publish.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -221,6 +225,25 @@ async function main(): Promise<void> {
       snapshotPath,
       ticket: Number(ticketSource),
     });
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "publish-ticket") {
+    const batchPath = optionValue("--batch");
+    const resultPath = optionValue("--result");
+    if (!batchPath || !resultPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "publish-ticket requires --batch <path> and --result <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const inputs = await readTicketPublicationInputs(batchPath, resultPath);
+    const result = await publishTicket(process.cwd(), inputs);
     writeJson({ command, ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
