@@ -178,6 +178,17 @@ export type {
   RunBatchOptions,
   RunBatchRuntime,
 } from "./batch/run.js";
+export { publishRunAudit } from "./audit/run.js";
+export type {
+  PublishedRunAudit,
+  RunAuditArtifact,
+  RunAuditInput,
+  RunAuditOutcome,
+  RunAuditRuntime,
+  RunAuditSkillReceipt,
+  RunAuditTicketEvidence,
+  RunAuditUploadRequest,
+} from "./audit/run.js";
 export type {
   FrontierResult,
   FrontierTicket,
