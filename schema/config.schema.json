@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Troymayrain/setup-sandcastle-queue/schema/config.schema.json",
+  "title": "Sandcastle Queue project configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "queue",
+    "runtime",
+    "commands",
+    "provider",
+    "execution",
+    "audit"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "queue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readyLabel", "ownershipLabel"],
+      "properties": {
+        "readyLabel": { "type": "string", "minLength": 1 },
+        "ownershipLabel": { "type": "string", "minLength": 1 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "version"],
+      "properties": {
+        "adapter": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tests", "verification"],
+      "properties": {
+        "tests": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "verification": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "models"],
+      "properties": {
+        "kind": { "const": "anthropic-compatible" },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ticket", "finalReview", "finalFix", "fast"],
+          "properties": {
+            "ticket": { "type": "string", "minLength": 1 },
+            "finalReview": { "type": "string", "minLength": 1 },
+            "finalFix": { "type": "string", "minLength": 1 },
+            "fast": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jobTimeoutMinutes",
+        "processingBudgetMinutes",
+        "ticketTimeoutMinutes",
+        "minimumRemainingMinutes",
+        "maxTicketsPerRun"
+      ],
+      "properties": {
+        "jobTimeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 350 },
+        "processingBudgetMinutes": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "ticketTimeoutMinutes": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "minimumRemainingMinutes": { "type": "integer", "minimum": 1, "maximum": 350 },
+        "maxTicketsPerRun": { "type": "integer", "minimum": 1, "maximum": 3 }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retentionDays"],
+      "properties": {
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 90 }
+      }
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
