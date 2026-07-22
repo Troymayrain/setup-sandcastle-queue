@@ -14,10 +14,13 @@
   },
   "files": [
     "SKILL.md",
+    "THIRD_PARTY_NOTICES.md",
     "agents",
+    "assets",
     "dist",
     "schema",
-    "scripts"
+    "scripts",
+    "vendor"
   ],
   "engines": {
     "node": ">=22 <23"

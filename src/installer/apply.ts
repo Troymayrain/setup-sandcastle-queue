@@ -258,6 +258,9 @@ async function applyCandidateAssets(
         "Target assets changed after the installation plan was created.",
       );
     }
+    if (asset.ownership === "project" && current.type === "file") {
+      continue;
+    }
     if (current.sha256 !== sha256(asset.content)) {
       changedAssets.push(asset);
     }

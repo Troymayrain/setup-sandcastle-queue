@@ -132,6 +132,51 @@ test("plan deterministically previews a complete fresh install without repositor
       {
         hashIsSha256: true,
         ownership: "installer",
+        path: ".agents/skills/code-review/agents/openai.yaml",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/code-review/SKILL.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/implement/agents/openai.yaml",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/implement/SKILL.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/sandcastle-runtime/SKILL.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/tdd/agents/openai.yaml",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/tdd/mocking.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/tdd/SKILL.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".agents/skills/tdd/tests.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
         path: ".github/workflows/sandcastle.yml",
       },
       {
@@ -143,6 +188,26 @@ test("plan deterministically previews a complete fresh install without repositor
         hashIsSha256: true,
         ownership: "installer-state",
         path: ".sandcastle/installation.json",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".sandcastle/skill-provenance.json",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: ".sandcastle/THIRD_PARTY_NOTICES.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "project",
+        path: "docs/agents/sandcastle-queue.md",
+      },
+      {
+        hashIsSha256: true,
+        ownership: "installer",
+        path: "skills-lock.json",
       },
     ],
   );

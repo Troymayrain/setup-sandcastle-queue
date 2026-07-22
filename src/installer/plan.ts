@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rename,
   rm,
   writeFile,
@@ -23,6 +24,7 @@ import { sha256 } from "../hash.js";
 import { VERSION } from "../version.js";
 import {
   renderCandidateAssets,
+  RUNTIME_SKILLS_UPSTREAM_COMMIT,
   TEMPLATE_VERSION,
   type AssetOwnership,
   type CandidateAsset,
@@ -230,11 +232,96 @@ async function writeBaseTree(
   );
 }
 
+async function installedSkillHash(
+  root: string,
+  current: string = root,
+  files: Array<{ content: Buffer; relativePath: string }> = [],
+): Promise<string> {
+  const entries = await readdir(current, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const absolute = join(current, entry.name);
+      if (entry.isDirectory()) {
+        await installedSkillHash(root, absolute, files);
+      } else if (entry.isFile()) {
+        files.push({
+          content: await readFile(absolute),
+          relativePath: absolute
+            .slice(root.length + 1)
+            .split("\\")
+            .join("/"),
+        });
+      }
+    }),
+  );
+  if (current !== root) {
+    return "";
+  }
+  const chunks: Buffer[] = [];
+  for (const file of files.sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  )) {
+    chunks.push(Buffer.from(file.relativePath), file.content);
+  }
+  return sha256(Buffer.concat(chunks));
+}
+
+async function validateRuntimeSkillLock(candidateRoot: string): Promise<void> {
+  const lock = JSON.parse(
+    await readFile(join(candidateRoot, "skills-lock.json"), "utf8"),
+  ) as {
+    skills?: Record<
+      string,
+      {
+        computedHash?: string;
+        ref?: string;
+        source?: string;
+        sourceType?: string;
+      }
+    >;
+    version?: number;
+  };
+  const expectedSkills = ["code-review", "implement", "tdd"];
+  if (
+    lock.version !== 1 ||
+    Object.keys(lock.skills ?? {}).sort().join("\u0000") !==
+      expectedSkills.join("\u0000")
+  ) {
+    throw new InfrastructureError([
+      {
+        code: "CANDIDATE_SKILL_LOCK_INVALID",
+        message: "Generated runtime skill lock has an unsupported shape.",
+      },
+    ]);
+  }
+
+  for (const skillName of expectedSkills) {
+    const entry = lock.skills?.[skillName];
+    const actualHash = await installedSkillHash(
+      join(candidateRoot, ".agents", "skills", skillName),
+    );
+    if (
+      entry?.computedHash !== actualHash ||
+      entry.ref !== RUNTIME_SKILLS_UPSTREAM_COMMIT ||
+      entry.source !== "mattpocock/skills" ||
+      entry.sourceType !== "github"
+    ) {
+      throw new InfrastructureError([
+        {
+          code: "CANDIDATE_SKILL_HASH_MISMATCH",
+          message: "Generated runtime skill snapshot failed provenance verification.",
+        },
+      ]);
+    }
+  }
+}
+
 async function validateCandidateTree(
   candidateRoot: string,
   assets: CandidateAsset[],
 ): Promise<void> {
   await readProjectConfig(join(candidateRoot, ".sandcastle/config.json"));
+  await validateRuntimeSkillLock(candidateRoot);
   const manifest = JSON.parse(
     await readFile(join(candidateRoot, ".sandcastle/installation.json"), "utf8"),
   ) as {
