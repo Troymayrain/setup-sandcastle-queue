@@ -189,6 +189,23 @@ export type {
   RunAuditTicketEvidence,
   RunAuditUploadRequest,
 } from "./audit/run.js";
+export { dispatchFinalReview, runFinalReview } from "./final-review/run.js";
+export type {
+  CumulativeReviewSpecification,
+  FinalReviewAxis,
+  FinalReviewAxisInput,
+  FinalReviewAxisResult,
+  FinalReviewDispatchInput,
+  FinalReviewDispatchResult,
+  FinalReviewDispatchRuntime,
+  FinalReviewFinding,
+  FinalReviewOptions,
+  FinalReviewResult,
+  FinalReviewRuntime,
+  FinalReviewState,
+  FinalReviewTicketState,
+  MarkPullRequestReadyInput,
+} from "./final-review/run.js";
 export type {
   FrontierResult,
   FrontierTicket,
