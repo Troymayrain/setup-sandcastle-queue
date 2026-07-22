@@ -120,6 +120,73 @@ function assertAdoptionMetadata(candidate: unknown): void {
   }
 }
 
+function hashOrNull(value: unknown): boolean {
+  return value === null || (typeof value === "string" && /^[a-f0-9]{64}$/u.test(value));
+}
+
+function assertUpgradeMetadata(candidate: unknown): void {
+  if (!isRecord(candidate)) {
+    throw planError("UPGRADE_PLAN_INVALID", "Upgrade metadata has an invalid shape.");
+  }
+  const expectedKeys = [
+    "configMigration",
+    "conflicts",
+    "fromInstallerVersion",
+    "runtimeWrapper",
+    "schemaVersion",
+    "targetRelease",
+  ];
+  if (
+    Object.keys(candidate).sort().join("\u0000") !==
+      expectedKeys.join("\u0000") ||
+    candidate.schemaVersion !== 1 ||
+    typeof candidate.fromInstallerVersion !== "string" ||
+    typeof candidate.targetRelease !== "string" ||
+    candidate.targetRelease !== VERSION ||
+    typeof candidate.runtimeWrapper !== "string" ||
+    !candidate.runtimeWrapper.startsWith(RUNTIME_WRAPPER_CONTENT.trimEnd()) ||
+    !Array.isArray(candidate.conflicts) ||
+    !(
+      candidate.configMigration === null ||
+      (isRecord(candidate.configMigration) &&
+        Object.keys(candidate.configMigration).sort().join("\u0000") ===
+          ["fromSha256", "toSha256"].join("\u0000") &&
+        typeof candidate.configMigration.fromSha256 === "string" &&
+        /^[a-f0-9]{64}$/u.test(candidate.configMigration.fromSha256) &&
+        typeof candidate.configMigration.toSha256 === "string" &&
+        /^[a-f0-9]{64}$/u.test(candidate.configMigration.toSha256))
+    )
+  ) {
+    throw planError("UPGRADE_PLAN_INVALID", "Upgrade metadata has an invalid shape.");
+  }
+  let previousPath = "";
+  for (const conflict of candidate.conflicts) {
+    if (
+      !isRecord(conflict) ||
+      Object.keys(conflict).sort().join("\u0000") !==
+        [
+          "currentSha256",
+          "installedSha256",
+          "path",
+          "targetSha256",
+        ].join("\u0000") ||
+      !hashOrNull(conflict.currentSha256) ||
+      !hashOrNull(conflict.installedSha256) ||
+      typeof conflict.path !== "string" ||
+      conflict.path.length === 0 ||
+      conflict.path <= previousPath ||
+      typeof conflict.targetSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(conflict.targetSha256)
+    ) {
+      throw planError(
+        "UPGRADE_PLAN_INVALID",
+        "Upgrade conflict metadata is invalid.",
+      );
+    }
+    previousPath = conflict.path;
+  }
+}
+
 function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPlan {
   if (!isRecord(candidate)) {
     throw planError("PLAN_INVALID", "Confirmed installation plan has an invalid shape.");
@@ -135,6 +202,7 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
     "preconditions",
     "schemaVersion",
     "templateVersion",
+    ...(candidate.upgrade === undefined ? [] : ["upgrade"]),
   ];
   if (
     Object.keys(candidate).sort().join("\u0000") !==
@@ -157,8 +225,17 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
     throw planError("PLAN_INVALID", "Confirmed installation plan has an invalid shape.");
   }
 
+  if (candidate.adoption !== undefined && candidate.upgrade !== undefined) {
+    throw planError(
+      "PLAN_INVALID",
+      "Confirmed plan cannot combine adoption and upgrade operations.",
+    );
+  }
   if (candidate.adoption !== undefined) {
     assertAdoptionMetadata(candidate.adoption);
+  }
+  if (candidate.upgrade !== undefined) {
+    assertUpgradeMetadata(candidate.upgrade);
   }
 
   if (sha256(canonicalJson(planWithoutHash(candidate))) !== candidate.planHash) {
@@ -169,11 +246,11 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
   }
 
   const config = validateProjectConfig(candidate.config);
-  const adoption = candidate.adoption as
+  const operation = (candidate.adoption ?? candidate.upgrade) as
     | { runtimeWrapper: string }
     | undefined;
   const renderedAssets = renderCandidateAssets(config, {
-    runtimeWrapper: adoption?.runtimeWrapper,
+    runtimeWrapper: operation?.runtimeWrapper,
   }).map((asset) => ({
     ownership: asset.ownership,
     path: asset.path,
@@ -210,6 +287,30 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
       "PLAN_PRECONDITION_INVALID",
       "Confirmed installation plan contains invalid target preconditions.",
     );
+  }
+  const upgrade = candidate.upgrade as
+    | {
+        configMigration: { fromSha256: string; toSha256: string } | null;
+      }
+    | undefined;
+  if (upgrade?.configMigration) {
+    const configAsset = renderedAssets.find(
+      ({ path }) => path === ".sandcastle/config.json",
+    );
+    const configPrecondition = candidate.preconditions.assets.find(
+      (precondition) =>
+        isRecord(precondition) &&
+        precondition.path === ".sandcastle/config.json",
+    ) as Record<string, unknown> | undefined;
+    if (
+      configAsset?.sha256 !== upgrade.configMigration.toSha256 ||
+      configPrecondition?.sha256 !== upgrade.configMigration.fromSha256
+    ) {
+      throw planError(
+        "UPGRADE_PLAN_INVALID",
+        "Config migration hashes do not match the reviewed upgrade plan.",
+      );
+    }
   }
 }
 
@@ -434,6 +535,12 @@ export async function applyInstallPlan(
       "An adoption plan must be applied through the adopt lifecycle.",
     );
   }
+  if (plan.upgrade) {
+    throw planError(
+      "UPGRADE_PLAN_REQUIRES_UPGRADE",
+      "An upgrade plan must be applied through the upgrade lifecycle.",
+    );
+  }
   if (plan.installationState === "unmanaged") {
     throw planError(
       "UNMANAGED_INSTALLATION",
@@ -513,6 +620,65 @@ export async function applyAdoptPlan(
     assets,
     plan.preconditions.assets,
     new Set([".sandcastle/config.json"]),
+  );
+  return {
+    changed: filesWritten.length > 0,
+    filesWritten,
+    planHash: plan.planHash,
+  };
+}
+
+export async function applyUpgradePlan(
+  repository: string,
+  plan: InstallPlan,
+  confirmation: string,
+): Promise<InstallResult> {
+  assertPlanEnvelope(plan);
+  if (!plan.upgrade || plan.installationState !== "managed") {
+    throw planError(
+      "UPGRADE_PLAN_INVALID",
+      "The confirmed plan is not a managed upgrade plan.",
+    );
+  }
+  if (confirmation !== plan.planHash) {
+    throw planError(
+      "PLAN_NOT_CONFIRMED",
+      "Upgrade requires explicit confirmation of the exact plan hash.",
+    );
+  }
+  if (plan.upgrade.conflicts.length > 0) {
+    throw planError(
+      "UPGRADE_CONFLICT",
+      "Managed-file conflicts must be resolved before upgrade can be applied.",
+    );
+  }
+
+  const root = await resolveRepositoryRoot(repository);
+  const assets = renderCandidateAssets(plan.config, {
+    runtimeWrapper: plan.upgrade.runtimeWrapper,
+  });
+  const actualPreconditions = await Promise.all(
+    assets.map((asset) => readAssetPrecondition(root, asset)),
+  );
+  if (
+    !plan.preconditions.assets.every((expected, index) => {
+      const actual = actualPreconditions[index];
+      return actual !== undefined && preconditionsMatch(expected, actual);
+    })
+  ) {
+    throw planError(
+      "PLAN_STALE",
+      "Target assets changed after the upgrade plan was created.",
+    );
+  }
+
+  const filesWritten = await applyCandidateAssets(
+    root,
+    assets,
+    plan.preconditions.assets,
+    plan.upgrade.configMigration
+      ? new Set([".sandcastle/config.json"])
+      : new Set(),
   );
   return {
     changed: filesWritten.length > 0,

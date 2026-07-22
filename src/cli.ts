@@ -15,6 +15,7 @@ import {
 import {
   applyAdoptPlan,
   applyInstallPlan,
+  applyUpgradePlan,
   readInstallPlan,
 } from "./installer/apply.js";
 import { proposeRuntime } from "./runtime/detect.js";
@@ -28,6 +29,7 @@ import {
   inspectLegacyQuiescence,
   parseLegacyPullRequestOptOut,
 } from "./installer/adopt.js";
+import { createUpgradePreview } from "./installer/upgrade.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -199,6 +201,49 @@ async function main(): Promise<void> {
       parseLegacyPullRequestOptOut(optionValue("--confirm-pr-opt-out")),
     );
     writeJson({ command: "adopt", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "upgrade") {
+    const upgradePlanPath = optionValue("--plan");
+    const upgradeConfirmation = optionValue("--confirm");
+    if (upgradePlanPath || upgradeConfirmation) {
+      if (!upgradePlanPath || !upgradeConfirmation) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "upgrade apply requires --plan <path> and --confirm <planHash>.",
+            path: "",
+          },
+        ]);
+      }
+      const plan = await readInstallPlan(upgradePlanPath);
+      const result = await applyUpgradePlan(
+        process.cwd(),
+        plan,
+        upgradeConfirmation,
+      );
+      writeJson({ command: "upgrade", ok: true, result, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const targetRelease = optionValue("--target");
+    if (!targetRelease) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "upgrade requires --target <exact-release>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await createUpgradePreview(
+      process.cwd(),
+      targetRelease,
+      optionValue("--config"),
+    );
+    writeJson({ command: "upgrade", ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }

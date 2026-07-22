@@ -57,8 +57,32 @@ export interface AdoptionPlanMetadata {
   skillExtensions: AdoptionSkillExtension[];
 }
 
+export interface UpgradeConflict {
+  currentSha256: string | null;
+  installedSha256: string | null;
+  path: string;
+  targetSha256: string;
+}
+
+export interface ConfigSchemaMigration {
+  fromSha256: string;
+  toSha256: string;
+}
+
+export interface UpgradePlanMetadata {
+  configMigration: ConfigSchemaMigration | null;
+  conflicts: UpgradeConflict[];
+  fromInstallerVersion: string;
+  runtimeWrapper: string;
+  schemaVersion: 1;
+  targetRelease: string;
+}
+
 export interface CreateInstallPlanOptions {
   adoption?: AdoptionPlanMetadata;
+  overwrittenProjectPaths?: string[];
+  preserveExistingProjectAssets?: boolean;
+  upgrade?: UpgradePlanMetadata;
 }
 
 export interface InstallPlan {
@@ -76,6 +100,7 @@ export interface InstallPlan {
   };
   schemaVersion: 1;
   templateVersion: string;
+  upgrade?: UpgradePlanMetadata;
 }
 
 interface PendingInstallPlan {
@@ -388,6 +413,7 @@ async function validateCandidateTree(
 async function renderPatch(
   repository: string,
   assets: CandidateAsset[],
+  preservedProjectAssets: CandidateAsset[] = [],
 ): Promise<string> {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "sandcastle-plan-"));
   const baseRoot = join(temporaryRoot, "base");
@@ -402,6 +428,7 @@ async function renderPatch(
       writeBaseTree(baseRoot, repository, assets),
       writeTree(candidateRoot, assets),
     ]);
+    await writeBaseTree(candidateRoot, repository, preservedProjectAssets);
     await validateCandidateTree(candidateRoot, assets);
     const result = await runCommand(
       "git",
@@ -447,13 +474,32 @@ export async function createInstallPlan(
     git(root, ["rev-parse", "HEAD"]),
     git(root, ["ls-files", "--stage", "-z"]),
   ]);
+  if (options.adoption && options.upgrade) {
+    throw new ConfigurationError([
+      {
+        code: "PLAN_OPERATION_INVALID",
+        message: "An installation plan cannot combine adoption and upgrade metadata.",
+        path: "",
+      },
+    ]);
+  }
   const assets = renderCandidateAssets(normalizedConfig, {
-    runtimeWrapper: options.adoption?.runtimeWrapper,
+    runtimeWrapper:
+      options.adoption?.runtimeWrapper ?? options.upgrade?.runtimeWrapper,
   });
+  const overwrittenProjectPaths = new Set(
+    options.overwrittenProjectPaths ?? [],
+  );
+  const preservedProjectAssets = options.preserveExistingProjectAssets
+    ? assets.filter(
+        ({ ownership, path }) =>
+          ownership === "project" && !overwrittenProjectPaths.has(path),
+      )
+    : [];
   const [installationState, preconditions, patch] = await Promise.all([
     determineInstallationState(root, assets),
     Promise.all(assets.map((asset) => readAssetPrecondition(root, asset))),
-    renderPatch(root, assets),
+    renderPatch(root, assets, preservedProjectAssets),
   ]);
   const planWithoutHash = {
     ...(options.adoption ? { adoption: options.adoption } : {}),
@@ -473,6 +519,7 @@ export async function createInstallPlan(
     },
     schemaVersion: 1 as const,
     templateVersion: TEMPLATE_VERSION,
+    ...(options.upgrade ? { upgrade: options.upgrade } : {}),
   };
 
   return {

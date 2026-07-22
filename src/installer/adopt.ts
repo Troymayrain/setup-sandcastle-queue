@@ -416,7 +416,11 @@ export async function createAdoptionPreview(
     schemaVersion: 1,
     skillExtensions,
   };
-  const plan = await createInstallPlan(root, config, { adoption });
+  const plan = await createInstallPlan(root, config, {
+    adoption,
+    overwrittenProjectPaths: [".sandcastle/config.json"],
+    preserveExistingProjectAssets: true,
+  });
   if (plan.installationState === "fresh") {
     throw adoptionError(
       "LEGACY_INSTALLATION_NOT_FOUND",

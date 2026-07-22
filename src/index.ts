@@ -28,6 +28,8 @@ export {
   inspectLegacyQuiescence,
   parseLegacyPullRequestOptOut,
 } from "./installer/adopt.js";
+export { createUpgradePreview } from "./installer/upgrade.js";
+export type { UpgradePreview } from "./installer/upgrade.js";
 export type {
   AdoptionMigration,
   AdoptionPreview,
@@ -36,6 +38,7 @@ export type {
 export {
   applyAdoptPlan,
   applyInstallPlan,
+  applyUpgradePlan,
   readInstallPlan,
 } from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
@@ -59,10 +62,13 @@ export type {
   AdoptionPlanMetadata,
   AdoptionSkillExtension,
   AssetPrecondition,
+  ConfigSchemaMigration,
   CreateInstallPlanOptions,
   InstallationState,
   InstallPlan,
   InstallPlanAsset,
+  UpgradeConflict,
+  UpgradePlanMetadata,
 } from "./installer/plan.js";
 export { TEMPLATE_VERSION } from "./installer/templates.js";
 export { VERSION } from "./version.js";
