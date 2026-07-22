@@ -1,0 +1,258 @@
+name: Sandcastle legacy lifecycle dogfood gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact verifier candidate commit
+        required: true
+        type: string
+      confirm_candidate_sha:
+        description: Repeat the exact verifier candidate commit
+        required: true
+        type: string
+      legacy_repository:
+        description: Existing owner/repository with the legacy installation
+        required: true
+        type: string
+      baseline_sha:
+        description: Exact quiescent legacy commit to exercise
+        required: true
+        type: string
+      confirm_baseline_sha:
+        description: Repeat the exact legacy baseline commit
+        required: true
+        type: string
+      release_version:
+        description: Exact published SemVer to dogfood
+        required: true
+        type: string
+      confirm_release_version:
+        description: Repeat the exact published SemVer
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    name: Authorize immutable candidate, baseline, and release
+    runs-on: ubuntu-24.04
+    environment: release-legacy-dogfood
+    permissions:
+      contents: read
+    outputs:
+      actor-permission: ${{ steps.authorization.outputs.actor-permission }}
+      gate-id: ${{ steps.authorization.outputs.gate-id }}
+    steps:
+      - name: Verify immutable inputs, published release, and maintainer
+        id: authorization
+        shell: bash
+        env:
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CONFIRM_BASELINE_SHA: ${{ inputs.confirm_baseline_sha }}
+          CONFIRM_CANDIDATE_SHA: ${{ inputs.confirm_candidate_sha }}
+          CONFIRM_RELEASE_VERSION: ${{ inputs.confirm_release_version }}
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_REPOSITORY: ${{ inputs.legacy_repository }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ || "$CANDIDATE_SHA" != "$CONFIRM_CANDIDATE_SHA" ]]; then
+            exit 2
+          fi
+          if [[ ! "$BASELINE_SHA" =~ ^[a-f0-9]{40}$ || "$BASELINE_SHA" != "$CONFIRM_BASELINE_SHA" ]]; then
+            exit 2
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$RELEASE_VERSION" != "$CONFIRM_RELEASE_VERSION" ]]; then
+            exit 2
+          fi
+          if [[ ! "$LEGACY_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            exit 2
+          fi
+          candidate_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${CANDIDATE_SHA}" --jq .sha)"
+          if [[ "$candidate_object" != "$CANDIDATE_SHA" ]]; then
+            exit 2
+          fi
+          actor_permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)"
+          if [[ "$actor_permission" != "admin" && "$actor_permission" != "maintain" ]]; then
+            exit 2
+          fi
+          release="$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName)"
+          jq -e --arg version "$RELEASE_VERSION" \
+            '.tagName == $version and .isDraft == false and .isPrerelease == false' \
+            <<<"$release" >/dev/null
+          published_version="$(npm view "setup-sandcastle-queue@${RELEASE_VERSION}" version)"
+          if [[ "$published_version" != "$RELEASE_VERSION" ]]; then
+            exit 3
+          fi
+          printf 'actor-permission=%s\n' "$actor_permission" >> "$GITHUB_OUTPUT"
+          printf 'gate-id=legacy-%s-%s\n' "$GITHUB_RUN_ID" "${CANDIDATE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+  dispatch-target:
+    name: Run lifecycle dogfood in the legacy repository
+    needs: authorize
+    runs-on: ubuntu-24.04
+    environment: release-legacy-dogfood
+    permissions:
+      actions: write
+    steps:
+      - name: Verify target baseline and dispatch its dedicated workflow
+        id: dispatch
+        shell: bash
+        env:
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          CANDIDATE_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GATE_ID: ${{ needs.authorize.outputs.gate-id }}
+          GH_TOKEN: ${{ secrets.LEGACY_DOGFOOD_DISPATCH_TOKEN }}
+          LEGACY_REPOSITORY: ${{ inputs.legacy_repository }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          target_object="$(gh api "repos/${LEGACY_REPOSITORY}/commits/${BASELINE_SHA}" --jq .sha)"
+          if [[ "$target_object" != "$BASELINE_SHA" ]]; then
+            exit 2
+          fi
+          gh workflow run sandcastle-legacy-dogfood.yml \
+            --repo "$LEGACY_REPOSITORY" \
+            --ref main \
+            -f "baseline_sha=$BASELINE_SHA" \
+            -f "candidate_repository=$CANDIDATE_REPOSITORY" \
+            -f "candidate_sha=$CANDIDATE_SHA" \
+            -f "gate_id=$GATE_ID" \
+            -f "release_version=$RELEASE_VERSION"
+
+          run_id=""
+          for _attempt in $(seq 1 60); do
+            run_id="$(gh run list \
+              --repo "$LEGACY_REPOSITORY" \
+              --workflow sandcastle-legacy-dogfood.yml \
+              --event workflow_dispatch \
+              --limit 30 \
+              --json databaseId,displayTitle \
+              --jq ".[] | select(.displayTitle == \"Sandcastle legacy dogfood $GATE_ID\") | .databaseId" \
+              | head -n 1)"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            sleep 10
+          done
+          if [[ ! "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            exit 3
+          fi
+          gh run watch "$run_id" --repo "$LEGACY_REPOSITORY" --exit-status
+          mkdir -p "$RUNNER_TEMP/legacy-evidence"
+          gh run download "$run_id" \
+            --repo "$LEGACY_REPOSITORY" \
+            --name "sandcastle-legacy-dogfood-$GATE_ID" \
+            --dir "$RUNNER_TEMP/legacy-evidence"
+          evidence_path="$(find "$RUNNER_TEMP/legacy-evidence" -type f -name legacy-dogfood.json -print -quit)"
+          if [[ -z "$evidence_path" ]]; then
+            exit 3
+          fi
+          cp "$evidence_path" "$RUNNER_TEMP/legacy-dogfood.json"
+
+      - name: Preserve target evidence for validation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: legacy-dogfood-target
+          path: ${{ runner.temp }}/legacy-dogfood.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  legacy-dogfood-gate:
+    name: Validate sanitized legacy lifecycle evidence
+    if: ${{ always() }}
+    needs:
+      - authorize
+      - dispatch-target
+    runs-on: ubuntu-24.04
+    environment: release-legacy-dogfood
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the exact verifier candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+
+      - name: Build the candidate verifier
+        run: npm ci --ignore-scripts && npm run build
+
+      - name: Download any target evidence
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: legacy-dogfood-target
+          path: ${{ runner.temp }}/legacy-evidence
+
+      - name: Assemble untrusted evidence without retaining invalid payloads
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ACTOR_PERMISSION: ${{ needs.authorize.outputs.actor-permission }}
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GATE_ID: ${{ needs.authorize.outputs.gate-id }}
+          LEGACY_REPOSITORY: ${{ inputs.legacy_repository }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          evidence='null'
+          evidence_path="$(find "$RUNNER_TEMP/legacy-evidence" -type f -name legacy-dogfood.json -print -quit 2>/dev/null || true)"
+          if [[ -n "$evidence_path" ]]; then
+            evidence="$(jq -c -e 'if type == "object" then . else error("invalid") end' "$evidence_path" 2>/dev/null || printf 'null')"
+          fi
+          jq -cn \
+            --arg actorPermission "$ACTOR_PERMISSION" \
+            --arg baselineSha "$BASELINE_SHA" \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg gateId "$GATE_ID" \
+            --arg releaseVersion "$RELEASE_VERSION" \
+            --arg repository "$LEGACY_REPOSITORY" \
+            --argjson evidence "$evidence" \
+            '{
+              actorPermission: $actorPermission,
+              baselineSha: $baselineSha,
+              candidateSha: $candidateSha,
+              evidence: $evidence,
+              gateId: $gateId,
+              releaseVersion: $releaseVersion,
+              repository: $repository
+            }' > "$RUNNER_TEMP/legacy-dogfood-input.json"
+
+      - name: Verify the release-bound legacy lifecycle contract
+        id: verify
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          node dist/cli.js verify-legacy-dogfood \
+            --input "$RUNNER_TEMP/legacy-dogfood-input.json" \
+            | tee "$RUNNER_TEMP/legacy-dogfood-gate.json"
+
+      - name: Upload reviewable success or sanitized failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sandcastle-legacy-dogfood-${{ inputs.candidate_sha }}
+          path: ${{ runner.temp }}/legacy-dogfood-gate.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce the dogfood gate
+        if: ${{ always() && steps.verify.outcome != 'success' }}
+        run: exit 4

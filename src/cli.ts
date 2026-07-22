@@ -77,6 +77,10 @@ import {
   readLiveE2EReleaseGateInput,
 } from "./release/live-e2e.js";
 import {
+  evaluateLegacyDogfoodGate,
+  readLegacyDogfoodGateInput,
+} from "./release/legacy-dogfood.js";
+import {
   evaluateCredentiallessFixtureMatrix,
   readCredentiallessFixtureMatrixInput,
 } from "./ci/fixture-matrix.js";
@@ -809,6 +813,24 @@ async function main(): Promise<void> {
     }
     const input = await readLiveE2EReleaseGateInput(inputPath);
     const result = evaluateLiveE2EReleaseGate(input);
+    writeJson({ command, ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 4;
+    return;
+  }
+
+  if (command === "verify-legacy-dogfood") {
+    const inputPath = optionValue("--input");
+    if (!inputPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-legacy-dogfood requires --input <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const input = await readLegacyDogfoodGateInput(inputPath);
+    const result = evaluateLegacyDogfoodGate(input);
     writeJson({ command, ok: result.ok, result, version: VERSION });
     process.exitCode = result.ok ? 0 : 4;
     return;

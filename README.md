@@ -50,7 +50,7 @@ npm run typecheck
 npm test
 ```
 
-普通 PR CI 使用九类无凭据 fixture、本地 GitHub 与 Anthropic-compatible contract servers，并验证 Docker build/run。Python 与 Java 的真实 live E2E 只允许 maintainer 手动触发，且成功必须来自专用 fixture repositories 的候选 commit 绑定证据。
+普通 PR CI 使用九类无凭据 fixture、本地 GitHub 与 Anthropic-compatible contract servers，并验证 Docker build/run。Python 与 Java 的真实 live E2E 只允许 maintainer 手动触发，且成功必须来自专用 fixture repositories 的候选 commit 绑定证据。legacy lifecycle dogfood 同样是 manual-only gate；它要求真实旧仓库返回 release、baseline 与 candidate 绑定的脱敏证据。当前仅验证器和 workflow 合同就绪，尚无成功 dogfood run。
 
 ## License
 

@@ -272,6 +272,21 @@ node /path/to/setup-sandcastle-queue/dist/cli.js rollback --target 0.1.0
 
 rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade 相同的 hash、precondition 和 schema checks。当前 CLI 只能恢复它自身携带的精确 release，不会联网解析 floating tag。
 
+### legacy lifecycle dogfood gate
+
+`.github/workflows/legacy-dogfood-release-gate.yml` 只接受 maintainer 手工触发。调用时必须重复确认 verifier candidate、quiescent legacy baseline 与已发布的精确 SemVer，并提供安装着旧 Sandcastle 的真实目标仓库。中央 workflow 只 dispatch 目标仓库的 `sandcastle-legacy-dogfood.yml`，不会替目标执行 `commit`、`push`、`stash` 或 `reset`。
+
+目标 workflow 必须把 `legacy-dogfood.json` 放入名为 `sandcastle-legacy-dogfood-<gate-id>` 的 artifact。证据须绑定 candidate、baseline、release、repository 与 workflow run，并包含以下可复核结果：
+
+- adopt 前没有 queued/running legacy workflow，旧 integration PR 已完成或明确退出管理；
+- Sandcastle-specific `code-review` patch 已迁入 wrapper，受控 skill snapshots 已恢复；
+- adopt 后 local doctor、remote doctor、upgrade、managed drift conflict 与精确 rollback 全部通过；
+- failed apply 和 drift conflict 的前后 tree hashes 相同，rollback actual hash 与 expected hash 相同；
+- adopt、managed drift conflict、rollback 与 upgrade 的计数都必须精确为一，自动 commit、push、stash 与 reset 的计数全部为零；
+- 每个 dogfood finding 只记录受限 code、GitHub issue number、`fixedInRelease` 与 reverified 状态，且修复 release 不得晚于本次被测 release。
+
+中央 `verify-legacy-dogfood` verifier 不保留不符合 schema 的目标 payload，只上传 candidate-bound 的成功报告或稳定的脱敏失败诊断。缺少发布物、目标 workflow、证据 artifact 或任一必需检查都会 fail closed。当前仓库没有真实成功 run 证据；不得把 workflow 合同测试记作 dogfood 完成。
+
 ### uninstall
 
 ```bash

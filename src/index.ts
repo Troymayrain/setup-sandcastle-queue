@@ -352,6 +352,18 @@ export type {
   LiveE2EReleaseGateResult,
 } from "./release/live-e2e.js";
 export {
+  evaluateLegacyDogfoodGate,
+  readLegacyDogfoodGateInput,
+} from "./release/legacy-dogfood.js";
+export type {
+  LegacyDogfoodChecks,
+  LegacyDogfoodEvidence,
+  LegacyDogfoodFinding,
+  LegacyDogfoodGateDiagnostic,
+  LegacyDogfoodGateInput,
+  LegacyDogfoodGateResult,
+} from "./release/legacy-dogfood.js";
+export {
   ANTHROPIC_CONTRACT_CAPABILITIES,
   CREDENTIALLESS_FIXTURE_IDS,
   evaluateCredentiallessFixtureMatrix,
