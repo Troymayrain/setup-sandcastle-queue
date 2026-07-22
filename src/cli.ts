@@ -51,6 +51,14 @@ import {
   parseEnrollmentSelection,
 } from "./batch/start.js";
 import { runCredentialBrokerProcess } from "./broker/server.js";
+import {
+  assertSandboxCliOptions,
+  checkProtectedPaths,
+  createSandboxPlan,
+  executeSandboxPlan,
+  parseSandboxCommand,
+} from "./sandbox/policy.js";
+import { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -73,6 +81,81 @@ async function main(): Promise<void> {
 
   if (command === "broker") {
     await runCredentialBrokerProcess();
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "egress-proxy") {
+    await runEgressProxyProcess();
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "sandbox-plan" || command === "sandbox-run") {
+    const executes = command === "sandbox-run";
+    assertSandboxCliOptions(arguments_, executes);
+    const config = optionValue("--config");
+    const image = optionValue("--image");
+    const sessionId = optionValue("--session-id");
+    const stage = optionValue("--stage");
+    const argv = parseSandboxCommand(optionValue("--argv-json"));
+    if (!config || !image || !sessionId || !stage) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message:
+            "sandbox commands require --config, --stage, --image, --session-id, and --argv-json.",
+          path: "",
+        },
+      ]);
+    }
+    const plan = await createSandboxPlan(
+      process.cwd(),
+      config,
+      stage,
+      image,
+      sessionId,
+      argv,
+    );
+    if (!executes) {
+      writeJson({ command, ok: true, result: plan, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const confirmation = optionValue("--confirm");
+    if (!confirmation) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "sandbox-run requires --confirm <planHash>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await executeSandboxPlan(plan, confirmation);
+    writeJson({
+      command,
+      ok: result.exitCode === 0,
+      result,
+      version: VERSION,
+    });
+    process.exitCode = result.exitCode === 0 ? 0 : 4;
+    return;
+  }
+
+  if (command === "check-protected") {
+    const before = optionValue("--before");
+    if (!before) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "check-protected requires --before <commit-sha>.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await checkProtectedPaths(process.cwd(), before);
+    writeJson({ command, ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }

@@ -1,6 +1,7 @@
 export {
   ConfigurationError,
   InfrastructureError,
+  isExactNetworkHost,
   readProjectConfig,
   resolveModelRoles,
   validateProjectConfig,
@@ -83,6 +84,21 @@ export {
   CredentialBroker,
   runCredentialBrokerProcess,
 } from "./broker/server.js";
+export {
+  assertSandboxCliOptions,
+  checkProtectedPaths,
+  createSandboxPlan,
+  executeSandboxPlan,
+  isProtectedControlPlanePath,
+  parseSandboxCommand,
+} from "./sandbox/policy.js";
+export type {
+  ProtectedPathResult,
+  SandboxExecutionResult,
+  SandboxPlan,
+  SandboxStage,
+} from "./sandbox/policy.js";
+export { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
 export type {
   BrokerAuditEvent,
   BrokerSessionCredential,

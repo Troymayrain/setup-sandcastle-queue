@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { basename } from "node:path";
 
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
@@ -56,6 +57,7 @@ export interface ProjectConfig {
       name: string;
       schemaVersion: 1;
     };
+    networkHosts?: string[];
     version: string;
   };
   commands: {
@@ -197,25 +199,55 @@ function commandDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
 }
 
 function runtimeDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
+  const diagnostics: ConfigurationDiagnostic[] = [];
   if (config.runtime.adapter === "custom" && !config.runtime.custom) {
-    return [
+    diagnostics.push(
       {
         code: "CUSTOM_ADAPTER_REQUIRED",
         message: "The custom runtime adapter requires a versioned custom block.",
         path: "/runtime/custom",
       },
-    ];
+    );
   }
   if (config.runtime.adapter !== "custom" && config.runtime.custom) {
-    return [
+    diagnostics.push(
       {
         code: "CUSTOM_ADAPTER_NOT_ALLOWED",
         message: "Built-in runtime adapters cannot include a custom block.",
         path: "/runtime/custom",
       },
-    ];
+    );
   }
-  return [];
+  for (const [index, host] of (config.runtime.networkHosts ?? []).entries()) {
+    if (!isExactNetworkHost(host)) {
+      diagnostics.push({
+        code: "SANDBOX_HOST_INVALID",
+        message: "Sandbox network hosts must be exact public DNS host names.",
+        path: `/runtime/networkHosts/${index}`,
+      });
+    }
+  }
+  return diagnostics;
+}
+
+export function isExactNetworkHost(host: string): boolean {
+  if (
+    host.length > 253 ||
+    host !== host.toLocaleLowerCase("en-US") ||
+    !host.includes(".") ||
+    host.endsWith(".") ||
+    host.endsWith(".local") ||
+    host.endsWith(".localhost") ||
+    isIP(host) !== 0
+  ) {
+    return false;
+  }
+  return host.split(".").every(
+    (label) =>
+      label.length > 0 &&
+      label.length <= 63 &&
+      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label),
+  );
 }
 
 export async function readProjectConfig(path: string): Promise<ProjectConfig> {
