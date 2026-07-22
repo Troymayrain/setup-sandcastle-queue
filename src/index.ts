@@ -195,6 +195,18 @@ export type {
   TicketNoChangeAcceptanceRecord,
   TicketNoChangeCandidateRecord,
 } from "./batch/no-change-records.js";
+export {
+  executeWorkflowCapability,
+  isWorkflowSecurityContractSatisfied,
+  WORKFLOW_OPERATION_CONTRACTS,
+} from "./workflow/security.js";
+export type {
+  WorkflowCapability,
+  WorkflowCapabilityRequest,
+  WorkflowJobPermissions,
+  WorkflowOperation,
+  WorkflowOperationContract,
+} from "./workflow/security.js";
 export type {
   BatchExecutionLimits,
   BatchRunMode,

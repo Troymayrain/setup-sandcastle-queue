@@ -23,6 +23,7 @@ import {
   createRemoteDoctorBinding,
   remoteDoctorArtifactName,
 } from "./remote-doctor.js";
+import { isWorkflowSecurityContractSatisfied } from "./workflow/security.js";
 
 const runtimeSkillNames = ["code-review", "implement", "tdd"] as const;
 
@@ -384,8 +385,7 @@ async function checkWorkflow(root: string): Promise<DoctorDiagnostic[]> {
       ),
     ];
   }
-  return workflow.includes("workflow_dispatch:") &&
-    workflow.includes("permissions: {}")
+  return isWorkflowSecurityContractSatisfied(workflow)
     ? []
     : [
         diagnostic(

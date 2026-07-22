@@ -10,6 +10,10 @@ import type { ProjectConfig } from "../config.js";
 import { canonicalJson } from "../canonical-json.js";
 import { sha256 } from "../hash.js";
 import { VERSION } from "../version.js";
+import {
+  WORKFLOW_OPERATION_CONTRACTS,
+  type WorkflowOperation,
+} from "../workflow/security.js";
 
 export const TEMPLATE_VERSION = "1.0.0";
 export const RUNTIME_SKILLS_UPSTREAM_COMMIT =
@@ -36,6 +40,16 @@ export interface CandidateRenderOptions {
   runtimeWrapper?: string;
 }
 
+function workflowPermissions(operation: WorkflowOperation): string {
+  const permissions = WORKFLOW_OPERATION_CONTRACTS[operation].permissions;
+  return [
+    `      actions: ${permissions.actions}`,
+    `      contents: ${permissions.contents}`,
+    `      issues: ${permissions.issues}`,
+    `      pull-requests: ${permissions.pullRequests}`,
+  ].join("\n");
+}
+
 const workflow = `# Managed by setup-sandcastle-queue. Use the installer to update this file.
 name: Sandcastle Queue
 
@@ -48,16 +62,42 @@ on:
         type: choice
         options:
           - start
+          - continue
+          - resume
+          - review-only
+          - final-fix
+          - abort
+          - remote-doctor
       parent:
         description: Parent PRD issue number
-        required: true
+        required: false
         type: string
       base_sha:
         description: Confirmed original default-branch SHA
-        required: true
+        required: false
+        type: string
+      batch_id:
+        description: Stable Batch identity for an existing Batch
+        required: false
+        type: string
+      expected_head:
+        description: Fixed Batch HEAD for reconciliation
+        required: false
+        type: string
+      predecessor_run_id:
+        description: Previous run identity for a continuation
+        required: false
+        type: string
+      pull_request:
+        description: Stable Batch pull request number
+        required: false
+        type: string
+      reason:
+        description: Human reason for abort or recovery
+        required: false
         type: string
 
-run-name: "Sandcastle \${{ inputs.operation }} parent #\${{ inputs.parent }}"
+run-name: "Sandcastle \${{ inputs.operation }} \${{ inputs.batch_id || inputs.parent }}"
 
 concurrency:
   group: sandcastle-\${{ github.repository }}
@@ -70,10 +110,28 @@ jobs:
     if: \${{ inputs.operation == 'start' }}
     name: Initialize stable Batch
     runs-on: ubuntu-24.04
+    outputs:
+      batch-id: \${{ steps.batch-identity.outputs.batch-id }}
     permissions:
       contents: write
       issues: read
     steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Fix the stable Batch identity
+        id: batch-identity
+        shell: bash
+        env:
+          BASE_SHA: \${{ inputs.base_sha }}
+          PARENT: \${{ inputs.parent }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PARENT" =~ ^[1-9][0-9]*$ || ! "$BASE_SHA" =~ ^[a-f0-9]{40,64}$ ]]; then
+            exit 2
+          fi
+          printf 'batch-id=p%s-%s-r%s\\n' "$PARENT" "\${BASE_SHA:0:12}" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Initialize stable Batch
         env:
           GITHUB_TOKEN: \${{ github.token }}
@@ -82,6 +140,133 @@ jobs:
           --parent "\${{ inputs.parent }}"
           --base-sha "\${{ inputs.base_sha }}"
           --run-id "\${{ github.run_id }}"
+          --config .sandcastle/config.json
+
+  process:
+    needs: initialize-batch
+    if: \${{ always() && !cancelled() && contains(fromJSON('["start","continue","resume"]'), inputs.operation) && (inputs.operation != 'start' || needs.initialize-batch.result == 'success') }}
+    name: Process or resume a Batch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    environment: sandcastle
+    permissions:
+${workflowPermissions("process")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the process host orchestrator
+        env:
+          ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_BATCH_ID: \${{ inputs.operation == 'start' && needs.initialize-batch.outputs.batch-id || inputs.batch_id }}
+          SANDCASTLE_OPERATION: process
+        run: >-
+          sandcastle-queue workflow-host
+          --operation process
+          --batch-id "$SANDCASTLE_BATCH_ID"
+          --expected-head "\${{ inputs.expected_head }}"
+          --predecessor-run-id "\${{ inputs.predecessor_run_id }}"
+
+  review-only:
+    if: \${{ inputs.operation == 'review-only' }}
+    name: Run cumulative review only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    environment: sandcastle
+    permissions:
+${workflowPermissions("review-only")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the review-only host orchestrator
+        env:
+          ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: review-only
+        run: >-
+          sandcastle-queue workflow-host
+          --operation review-only
+          --batch-id "\${{ inputs.batch_id }}"
+          --expected-head "\${{ inputs.expected_head }}"
+          --pull-request "\${{ inputs.pull_request }}"
+
+  final-fix:
+    if: \${{ inputs.operation == 'final-fix' }}
+    name: Run one bounded final fix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    environment: sandcastle
+    permissions:
+${workflowPermissions("final-fix")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the final-fix host orchestrator
+        env:
+          ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: final-fix
+        run: >-
+          sandcastle-queue workflow-host
+          --operation final-fix
+          --batch-id "\${{ inputs.batch_id }}"
+          --expected-head "\${{ inputs.expected_head }}"
+          --pull-request "\${{ inputs.pull_request }}"
+
+  abort:
+    if: \${{ inputs.operation == 'abort' }}
+    name: Abort a Batch recoverably
+    runs-on: ubuntu-24.04
+    permissions:
+${workflowPermissions("abort")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the abort host orchestrator
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: abort
+        run: >-
+          sandcastle-queue workflow-host
+          --operation abort
+          --batch-id "\${{ inputs.batch_id }}"
+          --expected-head "\${{ inputs.expected_head }}"
+          --pull-request "\${{ inputs.pull_request }}"
+          --reason "\${{ inputs.reason }}"
+
+  remote-doctor:
+    if: \${{ inputs.operation == 'remote-doctor' }}
+    name: Verify real Actions boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: sandcastle
+    permissions:
+${workflowPermissions("remote-doctor")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the remote doctor host orchestrator
+        env:
+          ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: remote-doctor
+        run: >-
+          sandcastle-queue workflow-host
+          --operation remote-doctor
           --config .sandcastle/config.json
 `;
 

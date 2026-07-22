@@ -487,6 +487,51 @@ test("doctor fails clearly when a managed file drifts", async () => {
   }
 });
 
+test("doctor rejects a hash-matched workflow with an automatic trigger", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const workflowPath = join(
+    repository,
+    ".github",
+    "workflows",
+    "sandcastle.yml",
+  );
+  const unsafeWorkflow = readFileSync(workflowPath, "utf8").replace(
+    "on:\n  workflow_dispatch:\n",
+    "on:\n  push:\n  workflow_dispatch:\n",
+  );
+  writeFileSync(workflowPath, unsafeWorkflow);
+  const manifestPath = join(repository, ".sandcastle", "installation.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.managedAssets[".github/workflows/sandcastle.yml"].sha256 = createHash(
+    "sha256",
+  )
+    .update(unsafeWorkflow)
+    .digest("hex");
+  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+  const github = await startGitHubServer();
+  try {
+    const result = await runDoctor(repository, {
+      ...process.env,
+      ANTHROPIC_AUTH_TOKEN: "provider-token-must-not-leak",
+      ANTHROPIC_BASE_URL: "https://private-provider.example.invalid",
+      GITHUB_API_URL: github.apiUrl,
+      GITHUB_TOKEN: "github-token-must-not-leak",
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(
+      JSON.parse(result.stdout).result.diagnostics.some(
+        ({ check, code }) =>
+          check === "workflow" && code === "WORKFLOW_INVALID",
+      ),
+      true,
+    );
+  } finally {
+    await github.close();
+  }
+});
+
 test("doctor fails clearly when a pinned runtime skill is missing", async () => {
   const repository = createRepository();
   install(repository, writeConfig());

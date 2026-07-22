@@ -804,7 +804,16 @@ async function main(): Promise<void> {
       : preview;
     writeJson({ command: "configure-github", ok: true, result, version: VERSION });
     process.exitCode = 0;
+    return;
   }
+
+  throw new ConfigurationError([
+    {
+      code: "CLI_COMMAND_UNKNOWN",
+      message: "Unknown sandcastle-queue command.",
+      path: "",
+    },
+  ]);
 }
 
 try {
