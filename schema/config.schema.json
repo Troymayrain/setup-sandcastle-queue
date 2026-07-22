@@ -31,8 +31,32 @@
       "additionalProperties": false,
       "required": ["adapter", "version"],
       "properties": {
-        "adapter": { "type": "string", "minLength": 1 },
-        "version": { "type": "string", "minLength": 1 }
+        "adapter": {
+          "enum": [
+            "python-pip",
+            "python-uv",
+            "node-npm",
+            "go-module",
+            "java-maven",
+            "custom"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "custom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "name"],
+          "properties": {
+            "schemaVersion": { "const": 1 },
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,62}$"
+            }
+          }
+        }
       }
     },
     "commands": {
@@ -60,7 +84,7 @@
         "models": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["ticket", "finalReview", "finalFix", "fast"],
+          "required": ["ticket"],
           "properties": {
             "ticket": { "type": "string", "minLength": 1 },
             "finalReview": { "type": "string", "minLength": 1 },

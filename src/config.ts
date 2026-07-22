@@ -45,7 +45,17 @@ export interface ProjectConfig {
     ownershipLabel: string;
   };
   runtime: {
-    adapter: string;
+    adapter:
+      | "custom"
+      | "go-module"
+      | "java-maven"
+      | "node-npm"
+      | "python-pip"
+      | "python-uv";
+    custom?: {
+      name: string;
+      schemaVersion: 1;
+    };
     version: string;
   };
   commands: {
@@ -56,9 +66,9 @@ export interface ProjectConfig {
     kind: "anthropic-compatible";
     models: {
       ticket: string;
-      finalReview: string;
-      finalFix: string;
-      fast: string;
+      finalReview?: string;
+      finalFix?: string;
+      fast?: string;
     };
   };
   execution: {
@@ -70,6 +80,16 @@ export interface ProjectConfig {
   };
   audit: {
     retentionDays: number;
+  };
+}
+
+export interface ModelRoleResolution {
+  fallbacks: Partial<Record<"fast" | "finalFix" | "finalReview", "ticket">>;
+  roles: {
+    fast: string;
+    finalFix: string;
+    finalReview: string;
+    ticket: string;
   };
 }
 
@@ -96,6 +116,17 @@ function normalizeSchemaError(error: ErrorObject): ConfigurationDiagnostic {
     return {
       code: "UNSUPPORTED_SCHEMA",
       message: "Only schema version 1 is supported.",
+      path: error.instancePath,
+    };
+  }
+
+  if (
+    error.instancePath === "/runtime/custom/schemaVersion" &&
+    error.keyword === "const"
+  ) {
+    return {
+      code: "UNSUPPORTED_CUSTOM_ADAPTER_SCHEMA",
+      message: "Only custom adapter schema version 1 is supported.",
       path: error.instancePath,
     };
   }
@@ -165,6 +196,28 @@ function commandDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
   return diagnostics;
 }
 
+function runtimeDiagnostics(config: ProjectConfig): ConfigurationDiagnostic[] {
+  if (config.runtime.adapter === "custom" && !config.runtime.custom) {
+    return [
+      {
+        code: "CUSTOM_ADAPTER_REQUIRED",
+        message: "The custom runtime adapter requires a versioned custom block.",
+        path: "/runtime/custom",
+      },
+    ];
+  }
+  if (config.runtime.adapter !== "custom" && config.runtime.custom) {
+    return [
+      {
+        code: "CUSTOM_ADAPTER_NOT_ALLOWED",
+        message: "Built-in runtime adapters cannot include a custom block.",
+        path: "/runtime/custom",
+      },
+    ];
+  }
+  return [];
+}
+
 export async function readProjectConfig(path: string): Promise<ProjectConfig> {
   let source: string;
   try {
@@ -206,10 +259,33 @@ export function validateProjectConfig(candidate: unknown): ProjectConfig {
   }
 
   const config = candidate as ProjectConfig;
-  const diagnostics = commandDiagnostics(config);
+  const diagnostics = [...runtimeDiagnostics(config), ...commandDiagnostics(config)];
   if (diagnostics.length > 0) {
     throw new ConfigurationError(diagnostics);
   }
 
   return config;
+}
+
+export function resolveModelRoles(config: ProjectConfig): ModelRoleResolution {
+  const { models } = config.provider;
+  const fallbacks: ModelRoleResolution["fallbacks"] = {};
+  if (!models.fast) {
+    fallbacks.fast = "ticket";
+  }
+  if (!models.finalFix) {
+    fallbacks.finalFix = "ticket";
+  }
+  if (!models.finalReview) {
+    fallbacks.finalReview = "ticket";
+  }
+  return {
+    fallbacks,
+    roles: {
+      fast: models.fast ?? models.ticket,
+      finalFix: models.finalFix ?? models.ticket,
+      finalReview: models.finalReview ?? models.ticket,
+      ticket: models.ticket,
+    },
+  };
 }

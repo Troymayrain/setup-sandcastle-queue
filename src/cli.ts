@@ -5,6 +5,7 @@ import {
   ConfigurationError,
   InfrastructureError,
   readProjectConfig,
+  resolveModelRoles,
 } from "./config.js";
 import {
   createInstallPlan,
@@ -12,6 +13,7 @@ import {
   savePendingInstallPlan,
 } from "./installer/plan.js";
 import { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
+import { proposeRuntime } from "./runtime/detect.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -103,6 +105,24 @@ async function main(): Promise<void> {
     const plan = await readInstallPlan(planPath);
     const result = await applyInstallPlan(process.cwd(), plan, confirmation);
     writeJson({ command: "install", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "propose") {
+    const result = await proposeRuntime(
+      process.cwd(),
+      optionValue("--confirm-runtime"),
+    );
+    writeJson({ command: "propose", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "resolve-models" && option === "--config" && configPath) {
+    const config = await readProjectConfig(configPath);
+    const result = resolveModelRoles(config);
+    writeJson({ command: "resolve-models", ok: true, result, version: VERSION });
     process.exitCode = 0;
   }
 }

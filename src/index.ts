@@ -2,12 +2,14 @@ export {
   ConfigurationError,
   InfrastructureError,
   readProjectConfig,
+  resolveModelRoles,
   validateProjectConfig,
 } from "./config.js";
 export type {
   CommandSpec,
   ConfigurationDiagnostic,
   InfrastructureDiagnostic,
+  ModelRoleResolution,
   ProjectConfig,
 } from "./config.js";
 export {
@@ -17,6 +19,8 @@ export {
 } from "./installer/plan.js";
 export { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
+export { proposeRuntime } from "./runtime/detect.js";
+export type { BuiltInAdapter, RuntimeProposal } from "./runtime/detect.js";
 export type {
   AssetPrecondition,
   InstallationState,
