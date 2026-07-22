@@ -44,6 +44,12 @@ import {
   readSpecSnapshot,
   verifySpecSnapshot,
 } from "./github/frontier.js";
+import {
+  applyBatchStart,
+  createBatchStartPreview,
+  initializeBatch,
+  parseEnrollmentSelection,
+} from "./batch/start.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -351,6 +357,65 @@ async function main(): Promise<void> {
       optionValue("--config"),
     );
     writeJson({ command: "status", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "start") {
+    const parent = optionValue("--parent");
+    if (!parent || !/^[1-9][0-9]*$/u.test(parent)) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "start requires --parent <issue-number>.",
+          path: "",
+        },
+      ]);
+    }
+    const config = optionValue("--config");
+    const selection = parseEnrollmentSelection(optionValue("--enroll"));
+    const preview = await createBatchStartPreview(
+      process.cwd(),
+      Number(parent),
+      config,
+      selection,
+    );
+    const confirmation = optionValue("--confirm");
+    const result = confirmation
+      ? await applyBatchStart(preview, confirmation)
+      : preview;
+    writeJson({ command: "start", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "initialize-batch") {
+    const parent = optionValue("--parent");
+    const baseSha = optionValue("--base-sha");
+    const runId = optionValue("--run-id");
+    if (!parent || !baseSha || !runId || !/^[1-9][0-9]*$/u.test(parent)) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message:
+            "initialize-batch requires --parent, --base-sha, and --run-id.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await initializeBatch(
+      process.cwd(),
+      Number(parent),
+      baseSha,
+      runId,
+      optionValue("--config"),
+    );
+    writeJson({
+      command: "initialize-batch",
+      ok: true,
+      result,
+      version: VERSION,
+    });
     process.exitCode = 0;
     return;
   }

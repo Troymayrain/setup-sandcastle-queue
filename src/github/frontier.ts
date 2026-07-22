@@ -343,10 +343,7 @@ function classifyTicket(
   const missingLabels = [config.queue.readyLabel, config.queue.ownershipLabel]
     .filter((label) => !labels.has(label.toLocaleLowerCase("en-US")))
     .map((label) => `missing-label:${label}`);
-  if (missingLabels.length > 0) {
-    return { reasons: missingLabels, status: "awaiting-enrollment" };
-  }
-  const reasons: string[] = [];
+  const reasons: string[] = [...missingLabels];
   if ((issue.assignees?.length ?? 0) > 0) {
     reasons.push("assigned");
   }
@@ -355,6 +352,9 @@ function classifyTicket(
     reasons.push(
       typeof blockedBy === "number" ? `blocked-by:${blockedBy}` : "blocked-by:unknown",
     );
+  }
+  if (missingLabels.length > 0) {
+    return { reasons, status: "awaiting-enrollment" };
   }
   return reasons.length > 0
     ? { reasons, status: "blocked" }

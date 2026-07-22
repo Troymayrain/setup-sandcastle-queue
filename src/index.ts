@@ -73,6 +73,17 @@ export {
   readSpecSnapshot,
   verifySpecSnapshot,
 } from "./github/frontier.js";
+export {
+  applyBatchStart,
+  createBatchStartPreview,
+  initializeBatch,
+  parseEnrollmentSelection,
+} from "./batch/start.js";
+export type {
+  BatchMetadata,
+  BatchStartPreview,
+  BatchStartResult,
+} from "./batch/start.js";
 export type {
   FrontierResult,
   FrontierTicket,

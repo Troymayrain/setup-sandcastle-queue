@@ -41,16 +41,48 @@ name: Sandcastle Queue
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Sandcastle operation
+        required: true
+        type: choice
+        options:
+          - start
+      parent:
+        description: Parent PRD issue number
+        required: true
+        type: string
+      base_sha:
+        description: Confirmed original default-branch SHA
+        required: true
+        type: string
+
+run-name: "Sandcastle \${{ inputs.operation }} parent #\${{ inputs.parent }}"
+
+concurrency:
+  group: sandcastle-\${{ github.repository }}
+  cancel-in-progress: false
 
 permissions: {}
 
 jobs:
-  installation-check:
-    name: Verify Sandcastle installation
+  initialize-batch:
+    if: \${{ inputs.operation == 'start' }}
+    name: Initialize stable Batch
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: read
     steps:
-      - name: Confirm managed workflow
-        run: echo "Sandcastle Queue installation is ready for runtime setup"
+      - name: Initialize stable Batch
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: >-
+          sandcastle-queue initialize-batch
+          --parent "\${{ inputs.parent }}"
+          --base-sha "\${{ inputs.base_sha }}"
+          --run-id "\${{ github.run_id }}"
+          --config .sandcastle/config.json
 `;
 
 interface SnapshotFile {
