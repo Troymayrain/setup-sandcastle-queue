@@ -67,6 +67,11 @@ import {
 } from "./ticket/publish.js";
 import { executionLimits, runBatch, type BatchRunMode } from "./batch/run.js";
 import { createHostBatchRuntime } from "./batch/host-runtime.js";
+import {
+  acceptTicketNoChange,
+  completeNoChangeBatch,
+  recordTicketNoChange,
+} from "./batch/no-change.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -668,6 +673,95 @@ async function main(): Promise<void> {
     );
     writeJson({ command, ok: result.status !== "failed", result, version: VERSION });
     process.exitCode = result.status === "failed" ? 4 : 0;
+    return;
+  }
+
+  if (
+    command === "record-no-change" ||
+    command === "accept-no-change" ||
+    command === "complete-no-change"
+  ) {
+    const batchId = optionValue("--batch-id");
+    const expectedHead = optionValue("--expected-head");
+    const noChangeConfigPath = optionValue("--config");
+    if (!batchId || !expectedHead || !noChangeConfigPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message:
+            "No-change commands require --batch-id, --expected-head, and --config.",
+          path: "",
+        },
+      ]);
+    }
+    if (command === "complete-no-change") {
+      const reason = optionValue("--reason");
+      if (!reason) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "complete-no-change requires --reason.",
+            path: "",
+          },
+        ]);
+      }
+      const result = await completeNoChangeBatch(
+        process.cwd(),
+        { batchId, expectedHead, reason },
+        noChangeConfigPath,
+      );
+      writeJson({ command, ok: true, result, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const ticketSource = optionValue("--ticket");
+    if (!ticketSource || !/^[1-9][0-9]*$/u.test(ticketSource)) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: `${command} requires --ticket <issue-number>.`,
+          path: "",
+        },
+      ]);
+    }
+    const ticket = Number(ticketSource);
+    if (command === "record-no-change") {
+      const sessionId = optionValue("--session-id");
+      if (!sessionId) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "record-no-change requires --session-id.",
+            path: "",
+          },
+        ]);
+      }
+      const result = await recordTicketNoChange(
+        process.cwd(),
+        { batchId, expectedHead, sessionId, ticket },
+        noChangeConfigPath,
+      );
+      writeJson({ command, ok: true, result, version: VERSION });
+      process.exitCode = 0;
+      return;
+    }
+    const reason = optionValue("--reason");
+    if (!reason) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "accept-no-change requires --reason.",
+          path: "",
+        },
+      ]);
+    }
+    const result = await acceptTicketNoChange(
+      process.cwd(),
+      { batchId, expectedHead, reason, ticket },
+      noChangeConfigPath,
+    );
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = 0;
     return;
   }
 

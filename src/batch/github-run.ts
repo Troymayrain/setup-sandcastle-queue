@@ -10,6 +10,12 @@ import {
 } from "../ticket/publish.js";
 import type { BatchRunState, BatchRunTicket } from "./run.js";
 import type { ContinuationInput } from "./run.js";
+import {
+  parseTicketNoChangeAcceptance,
+  parseTicketNoChangeCandidate,
+  type TicketNoChangeAcceptanceRecord,
+  type TicketNoChangeCandidateRecord,
+} from "./no-change-records.js";
 
 const batchIdPattern = /^p([1-9][0-9]*)-([a-f0-9]{12})-r([1-9][0-9]*)$/u;
 
@@ -45,6 +51,12 @@ interface PublishedCommitFact {
   sessionId: string;
   sha: string;
   ticket: number;
+}
+
+interface TicketCommentRecords {
+  acceptances: TicketNoChangeAcceptanceRecord[];
+  candidates: TicketNoChangeCandidateRecord[];
+  publications: TicketPublicationRecord[];
 }
 
 class BatchRunGitHubClient {
@@ -229,12 +241,16 @@ async function readIssues(
   return issues as GitHubIssue[];
 }
 
-async function readPublicationRecords(
+async function readTicketRecords(
   client: BatchRunGitHubClient,
   repository: string,
   ticket: number,
-): Promise<TicketPublicationRecord[]> {
-  const records: TicketPublicationRecord[] = [];
+): Promise<TicketCommentRecords> {
+  const records: TicketCommentRecords = {
+    acceptances: [],
+    candidates: [],
+    publications: [],
+  };
   for (let page = 1; page <= 100; page += 1) {
     const response = await client.get<GitHubComment[]>(
       `/repos/${repository}/issues/${ticket}/comments?per_page=100&page=${page}`,
@@ -254,8 +270,13 @@ async function readPublicationRecords(
       );
     }
     for (const comment of response.data) {
-      const record = parseTicketPublicationRecord(comment.body as string);
-      if (record) records.push(record);
+      const body = comment.body as string;
+      const publication = parseTicketPublicationRecord(body);
+      const candidate = parseTicketNoChangeCandidate(body);
+      const acceptance = parseTicketNoChangeAcceptance(body);
+      if (publication) records.publications.push(publication);
+      if (candidate) records.candidates.push(candidate);
+      if (acceptance) records.acceptances.push(acceptance);
     }
     if (!hasNextPage(response.headers)) return records;
   }
@@ -372,6 +393,31 @@ function validRecord(
     commit?.batchId === record.batchId &&
     commit.ticket === record.ticket &&
     commit.sessionId === record.sessionId
+  );
+}
+
+function validNoChangeCandidate(
+  record: TicketNoChangeCandidateRecord,
+  batchId: string,
+  ticket: number,
+  history: { commits: Map<string, PublishedCommitFact>; originalBaseSha: string },
+): boolean {
+  return (
+    record.batchId === batchId &&
+    record.ticket === ticket &&
+    (record.head === history.originalBaseSha || history.commits.has(record.head))
+  );
+}
+
+function acceptanceMatchesCandidate(
+  acceptance: TicketNoChangeAcceptanceRecord,
+  candidate: TicketNoChangeCandidateRecord,
+): boolean {
+  return (
+    acceptance.batchId === candidate.batchId &&
+    acceptance.head === candidate.head &&
+    acceptance.sessionId === candidate.sessionId &&
+    acceptance.ticket === candidate.ticket
   );
 }
 
@@ -493,23 +539,56 @@ export async function readBatchRunState(
   }
   const records = await Promise.all(
     childIssues.map((issue) =>
-      readPublicationRecords(client, repository, issue.number as number),
+      readTicketRecords(client, repository, issue.number as number),
     ),
   );
   const tickets = childIssues.map((issue, index): BatchRunTicket => {
-    const ticketRecords = records[index] as TicketPublicationRecord[];
+    const ticketRecords = records[index] as TicketCommentRecords;
     const number = issue.number as number;
     if (
-      ticketRecords.length > 1 ||
-      (ticketRecords[0] &&
-        !validRecord(ticketRecords[0], batchId, number, history.commits))
+      ticketRecords.publications.length > 1 ||
+      ticketRecords.candidates.length > 1 ||
+      ticketRecords.acceptances.length > 1 ||
+      (ticketRecords.publications.length > 0 &&
+        (ticketRecords.candidates.length > 0 ||
+          ticketRecords.acceptances.length > 0)) ||
+      (ticketRecords.publications[0] &&
+        !validRecord(
+          ticketRecords.publications[0],
+          batchId,
+          number,
+          history.commits,
+        )) ||
+      (ticketRecords.candidates[0] &&
+        !validNoChangeCandidate(
+          ticketRecords.candidates[0],
+          batchId,
+          number,
+          history,
+        )) ||
+      (ticketRecords.acceptances[0] &&
+        (!ticketRecords.candidates[0] ||
+          !acceptanceMatchesCandidate(
+            ticketRecords.acceptances[0],
+            ticketRecords.candidates[0],
+          )))
     ) {
       return { number, reasons: ["publication-record-conflict"], status: "conflict" };
     }
-    if (ticketRecords.length === 1) {
+    if (ticketRecords.publications.length === 1) {
       return issue.state === "closed"
         ? { number, reasons: [], status: "published" }
         : { number, reasons: ["published-ticket-open"], status: "conflict" };
+    }
+    if (ticketRecords.candidates.length === 1) {
+      if (ticketRecords.acceptances.length === 1) {
+        return issue.state === "closed"
+          ? { number, reasons: [], status: "accepted-no-change" }
+          : { number, reasons: ["accepted-ticket-open"], status: "conflict" };
+      }
+      return issue.state === "open"
+        ? { number, reasons: [], status: "waiting-no-change" }
+        : { number, reasons: ["no-change-ticket-closed"], status: "conflict" };
     }
     if (issue.state === "closed") {
       const closedAt = Date.parse(issue.closed_at ?? "");

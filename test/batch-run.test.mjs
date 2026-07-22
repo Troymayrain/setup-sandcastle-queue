@@ -190,7 +190,10 @@ test("stale continuation exits safely and resume classifies authoritative queue 
       "ready-for-final-review",
     ],
   ]) {
-    const snapshot = state(tickets);
+    const snapshot = state(
+      tickets,
+      expected === "ready-for-final-review" ? "b".repeat(40) : undefined,
+    );
     const resumed = await runBatch(
       "/unused",
       {

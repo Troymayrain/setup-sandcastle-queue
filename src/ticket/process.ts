@@ -58,7 +58,7 @@ interface ImplementationResult {
   phase: "implementation";
   schemaVersion: 1;
   sessionId: string;
-  status: "implemented";
+  status: "implemented" | "no-change";
   ticket: number;
 }
 
@@ -119,6 +119,22 @@ export interface TicketProcessingResult {
   };
   verificationHash: string;
 }
+
+export interface TicketNoChangeResult {
+  beforeHead: string;
+  head: string;
+  sessionId: string;
+  status: "waiting-no-change";
+  ticket: number;
+  toolCalls: {
+    implement: string;
+    tdd: string;
+  };
+}
+
+export type TicketProcessingOutcome =
+  | TicketNoChangeResult
+  | TicketProcessingResult;
 
 export interface ProcessTicketOptions {
   agentDriver: string[];
@@ -304,7 +320,7 @@ function implementationEvidence(
   ticket: number,
   sessionId: string,
   head: string,
-): { implement: string; tdd: string } {
+): { implement: string; status: "implemented" | "no-change"; tdd: string } {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
     throw configurationError(
       "TICKET_EVIDENCE_INVALID",
@@ -315,7 +331,7 @@ function implementationEvidence(
   if (
     result.schemaVersion !== 1 ||
     result.phase !== "implementation" ||
-    result.status !== "implemented" ||
+    (result.status !== "implemented" && result.status !== "no-change") ||
     result.ticket !== ticket ||
     result.sessionId !== sessionId ||
     result.head !== head ||
@@ -338,16 +354,21 @@ function implementationEvidence(
   if (
     !implement ||
     !tdd ||
-    !firstChange ||
     implement.sequence >= tdd.sequence ||
-    tdd.sequence >= firstChange.sequence
+    (result.status === "implemented" &&
+      (!firstChange || tdd.sequence >= firstChange.sequence)) ||
+    (result.status === "no-change" && firstChange !== undefined)
   ) {
     throw configurationError(
       "TICKET_SKILL_PROTOCOL_INVALID",
       "Ticket runtime must enter implement and complete tdd before the first workspace change.",
     );
   }
-  return { implement: implement.toolCallId, tdd: tdd.toolCallId };
+  return {
+    implement: implement.toolCallId,
+    status: result.status,
+    tdd: tdd.toolCallId,
+  };
 }
 
 function validFinding(candidate: unknown): candidate is TicketReviewFinding {
@@ -484,7 +505,7 @@ export async function processTicket(
   repositoryPath: string,
   options: ProcessTicketOptions,
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<TicketProcessingResult> {
+): Promise<TicketProcessingOutcome> {
   if (!Number.isSafeInteger(options.ticket) || options.ticket <= 0) {
     throw configurationError(
       "TICKET_NUMBER_INVALID",
@@ -593,13 +614,40 @@ export async function processTicket(
       sessionId,
       implementationHead,
     );
-    const changed = (
-      await git(root, ["diff", "--name-only", "--no-renames", options.beforeHead, "--"])
-    ).stdout;
-    if (!changed.trim()) {
+    const [changed, postImplementationStatus] = await Promise.all([
+      git(root, ["diff", "--name-only", "--no-renames", options.beforeHead, "--"]),
+      git(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
+    ]);
+    const hasTicketDiff =
+      changed.stdout.trim().length > 0 ||
+      postImplementationStatus.stdout.length > 0;
+    if (!hasTicketDiff) {
+      if (
+        toolCalls.status !== "no-change" ||
+        implementationHead !== options.beforeHead
+      ) {
+        throw configurationError(
+          "TICKET_NO_CHANGE_EVIDENCE_INVALID",
+          "A zero-diff Ticket requires explicit no-change evidence at the original HEAD.",
+        );
+      }
+      await checkProtectedPaths(root, options.beforeHead);
+      return {
+        beforeHead: options.beforeHead,
+        head: implementationHead,
+        sessionId,
+        status: "waiting-no-change",
+        ticket: options.ticket,
+        toolCalls: {
+          implement: toolCalls.implement,
+          tdd: toolCalls.tdd,
+        },
+      };
+    }
+    if (toolCalls.status !== "implemented") {
       throw configurationError(
-        "TICKET_NO_DIFF",
-        "Agent produced no Ticket diff; explicit no-change handling is required.",
+        "TICKET_NO_CHANGE_EVIDENCE_INVALID",
+        "Agent no-change evidence cannot accompany repository changes.",
       );
     }
     await checkProtectedPaths(root, options.beforeHead);

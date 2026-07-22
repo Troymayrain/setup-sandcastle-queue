@@ -139,7 +139,7 @@ function writeSeam() {
   return path;
 }
 
-function createTicketDocker(repository) {
+function createTicketDocker(repository, { noChange = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "sandcastle-ticket-docker-"));
   const logPath = join(directory, "calls.jsonl");
   const executable = join(directory, "docker");
@@ -177,6 +177,22 @@ const inputDirectory = mountSource("/sandcastle/input");
 const outputPath = outputArgument.replace("/sandcastle/output", outputDirectory);
 const contract = JSON.parse(readFileSync(inputDirectory + "/contract.json", "utf8"));
 if (phase === "implementation") {
+  if (${JSON.stringify(noChange)}) {
+    const head = execFileSync("git", ["-C", ${JSON.stringify(repository)}, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    writeFileSync(outputPath, JSON.stringify({
+      events: [
+        { kind: "skill-tool-result", ok: true, sequence: 1, skill: "implement", toolCallId: "implement-" + contract.sessionId },
+        { kind: "skill-tool-result", ok: true, sequence: 2, skill: "tdd", toolCallId: "tdd-" + contract.sessionId },
+      ],
+      head,
+      phase,
+      schemaVersion: 1,
+      sessionId: contract.sessionId,
+      status: "no-change",
+      ticket: contract.ticket,
+    }) + "\\n");
+    process.exit(0);
+  }
   writeFileSync(${JSON.stringify(join(repository, "src", "feature.js"))}, "export const ticket = " + contract.ticket + ";\\n");
   execFileSync("git", ["-C", ${JSON.stringify(repository)}, "add", "src/feature.js"]);
   execFileSync("git", ["-C", ${JSON.stringify(repository)}, "-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", "commit", "--quiet", "-m", "agent intermediate"]);
@@ -412,6 +428,42 @@ test("host test failure blocks review even after Agent reports implementation su
     ),
     false,
   );
+});
+
+test("a verified zero-diff Agent result waits for human no-change acceptance without review", () => {
+  const repository = createRepository();
+  const docker = createTicketDocker(repository, { noChange: true });
+  const before = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  const result = spawnSync(
+    process.execPath,
+    processArgs({
+      before,
+      config: writeConfig(),
+      seam: writeSeam(),
+      snapshot: writeSnapshot(2),
+      ticket: 2,
+    }),
+    {
+      cwd: repository,
+      encoding: "utf8",
+      env: processEnvironment(docker, 2),
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const outcome = JSON.parse(result.stdout).result;
+  assert.equal(outcome.status, "waiting-no-change");
+  assert.equal(outcome.beforeHead, before);
+  assert.equal(outcome.head, before);
+  assert.deepEqual(Object.keys(outcome.toolCalls).sort(), ["implement", "tdd"]);
+  const stageRuns = docker.calls().filter(
+    ({ argv }) => argv[0] === "run" && !argv.includes("egress-proxy"),
+  );
+  assert.equal(stageRuns.length, 1);
+  assert.equal(stageRuns[0].argv.includes("implementation"), true);
+  assert.equal(stageRuns[0].argv.includes("review"), false);
 });
 
 test("missing pre-confirmed spec or testing seam blocks before sandbox launch", () => {

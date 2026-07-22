@@ -103,6 +103,8 @@ export { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
 export { processTicket } from "./ticket/process.js";
 export type {
   ProcessTicketOptions,
+  TicketNoChangeResult,
+  TicketProcessingOutcome,
   TicketProcessingResult,
   TicketReviewFinding,
 } from "./ticket/process.js";
@@ -141,6 +143,28 @@ export {
 } from "./batch/github-run.js";
 export { createHostBatchRuntime } from "./batch/host-runtime.js";
 export type { HostBatchRuntimeOptions } from "./batch/host-runtime.js";
+export {
+  acceptTicketNoChange,
+  completeNoChangeBatch,
+  recordTicketNoChange,
+} from "./batch/no-change.js";
+export type {
+  AcceptTicketNoChangeOptions,
+  BatchNoChangeResult,
+  CompleteNoChangeBatchOptions,
+  RecordTicketNoChangeOptions,
+  TicketNoChangeResult as AcceptedTicketNoChangeResult,
+} from "./batch/no-change.js";
+export {
+  parseBatchNoChangeCompletion,
+  parseTicketNoChangeAcceptance,
+  parseTicketNoChangeCandidate,
+} from "./batch/no-change-records.js";
+export type {
+  BatchNoChangeCompletionRecord,
+  TicketNoChangeAcceptanceRecord,
+  TicketNoChangeCandidateRecord,
+} from "./batch/no-change-records.js";
 export type {
   BatchExecutionLimits,
   BatchRunMode,

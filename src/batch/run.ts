@@ -2,6 +2,7 @@ import { ConfigurationError, type ProjectConfig } from "../config.js";
 
 const batchIdPattern = /^p([1-9][0-9]*)-([a-f0-9]{12})-r([1-9][0-9]*)$/u;
 const completeStatuses = new Set<BatchRunTicketStatus>([
+  "accepted-no-change",
   "preexisting-complete",
   "published",
 ]);
@@ -9,6 +10,7 @@ const completeStatuses = new Set<BatchRunTicketStatus>([
 export type BatchRunMode = "continuation" | "process" | "resume";
 
 export type BatchRunTicketStatus =
+  | "accepted-no-change"
   | "awaiting-enrollment"
   | "blocked"
   | "conflict"
@@ -107,6 +109,7 @@ export type BatchRunResult = BatchRunResultBase &
         status:
           | "awaiting-enrollment"
           | "blocked"
+          | "completed-no-change"
           | "conflict"
           | "ready-for-final-review"
           | "stale-continuation"
@@ -182,6 +185,7 @@ function validateState(
   const basePrefix = identity[2];
   const initialRunId = identity[3];
   const statuses = new Set<BatchRunTicketStatus>([
+    "accepted-no-change",
     "awaiting-enrollment",
     "blocked",
     "conflict",
@@ -238,7 +242,9 @@ function terminalStatus(state: BatchRunState): BatchRunResult["status"] | null {
     return "blocked";
   }
   if (state.tickets.every(({ status }) => completeStatuses.has(status))) {
-    return "ready-for-final-review";
+    return state.remoteHead === state.originalBaseSha
+      ? "completed-no-change"
+      : "ready-for-final-review";
   }
   return "conflict";
 }
