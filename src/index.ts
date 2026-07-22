@@ -79,6 +79,16 @@ export {
   initializeBatch,
   parseEnrollmentSelection,
 } from "./batch/start.js";
+export {
+  CredentialBroker,
+  runCredentialBrokerProcess,
+} from "./broker/server.js";
+export type {
+  BrokerAuditEvent,
+  BrokerSessionCredential,
+  BrokerSessionRequest,
+  BrokerUsage,
+} from "./broker/server.js";
 export type {
   BatchMetadata,
   BatchStartPreview,

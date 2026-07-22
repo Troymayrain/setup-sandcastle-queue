@@ -50,6 +50,7 @@ import {
   initializeBatch,
   parseEnrollmentSelection,
 } from "./batch/start.js";
+import { runCredentialBrokerProcess } from "./broker/server.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -66,6 +67,12 @@ function writeJson(value: object): void {
 async function main(): Promise<void> {
   if (command === "version") {
     writeJson({ command: "version", ok: true, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "broker") {
+    await runCredentialBrokerProcess();
     process.exitCode = 0;
     return;
   }
