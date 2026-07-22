@@ -160,6 +160,19 @@ export {
   parseTicketNoChangeAcceptance,
   parseTicketNoChangeCandidate,
 } from "./batch/no-change-records.js";
+export {
+  abortBatch,
+  parseBatchAbortRecord,
+  renderBatchAbortRecord,
+} from "./batch/abort.js";
+export type {
+  AbortBatchOptions,
+  AbortBatchResult,
+  AbortBatchRuntime,
+  AbortBatchState,
+  AbortCheckpoint,
+  BatchAbortRecord,
+} from "./batch/abort.js";
 export type {
   BatchNoChangeCompletionRecord,
   TicketNoChangeAcceptanceRecord,
