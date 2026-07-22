@@ -287,6 +287,21 @@ rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade �
 
 中央 `verify-legacy-dogfood` verifier 不保留不符合 schema 的目标 payload，只上传 candidate-bound 的成功报告或稳定的脱敏失败诊断。缺少发布物、目标 workflow、证据 artifact 或任一必需检查都会 fail closed。当前仓库没有真实成功 run 证据；不得把 workflow 合同测试记作 dogfood 完成。
 
+### three-ticket Batch dogfood gate
+
+`.github/workflows/batch-dogfood-release-gate.yml` 只允许 maintainer 手工触发，并把成功的 legacy lifecycle dogfood run ID 与报告 hash 作为硬前置条件。维护者还必须重复确认 verifier candidate、真实项目 base SHA 与精确 release，提供一个新父 PRD 和按依赖顺序排列的三张不同 Tickets。中央 workflow 只 dispatch 目标仓库的 `sandcastle-batch-dogfood.yml`。
+
+目标 workflow 必须把 `batch-dogfood.json` 放入名为 `sandcastle-batch-dogfood-<gate-id>` 的 artifact。`verify-batch-dogfood` 要求证据同时满足：
+
+- 三张 Tickets 通过人工 enrollment 加入新 Batch；第二、三票各引用已排在前面的 native dependency，总依赖边不少于两条；
+- 每票恰好一次 implementation 和 publication，context、session、Published Commit 与 processing run 均唯一；
+- checkpoint 在 `21600` 秒限制之前产生，predecessor/continuation run 与 state hash 可关联；
+- 第一票失败后的 resume 或等价 recovery，以及 push 成功但 closure 未完成后的 recovery，都只产生一次实现、发布与关闭结果；
+- cumulative Final Review 完成，随后至少走过一次 Final Fix 或 human review-only 路径，最终 findings 为零；
+- audit timeline 能关联父 PRD、Tickets、sessions、skill receipts、commits、PR 与 runs，且明确不含 raw transcript 或 secrets。
+
+验证成功后保存的报告只包含受限 IDs、hashes、计数、拓扑和状态；任何额外目标 payload、重复身份、超时 checkpoint、stale legacy prerequisite 或不安全 audit 都会被丢弃并 fail closed。当前 `workflow-host` 仍未实现，也没有真实三票成功证据，因此不得把这个 gate 的合同测试记作 Batch dogfood 完成。
+
 ### uninstall
 
 ```bash

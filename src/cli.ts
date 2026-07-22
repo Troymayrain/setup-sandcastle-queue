@@ -81,6 +81,10 @@ import {
   readLegacyDogfoodGateInput,
 } from "./release/legacy-dogfood.js";
 import {
+  evaluateBatchDogfoodGate,
+  readBatchDogfoodGateInput,
+} from "./release/batch-dogfood.js";
+import {
   evaluateCredentiallessFixtureMatrix,
   readCredentiallessFixtureMatrixInput,
 } from "./ci/fixture-matrix.js";
@@ -831,6 +835,24 @@ async function main(): Promise<void> {
     }
     const input = await readLegacyDogfoodGateInput(inputPath);
     const result = evaluateLegacyDogfoodGate(input);
+    writeJson({ command, ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 4;
+    return;
+  }
+
+  if (command === "verify-batch-dogfood") {
+    const inputPath = optionValue("--input");
+    if (!inputPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-batch-dogfood requires --input <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const input = await readBatchDogfoodGateInput(inputPath);
+    const result = evaluateBatchDogfoodGate(input);
     writeJson({ command, ok: result.ok, result, version: VERSION });
     process.exitCode = result.ok ? 0 : 4;
     return;

@@ -364,6 +364,23 @@ export type {
   LegacyDogfoodGateResult,
 } from "./release/legacy-dogfood.js";
 export {
+  evaluateBatchDogfoodGate,
+  readBatchDogfoodGateInput,
+} from "./release/batch-dogfood.js";
+export type {
+  BatchDogfoodAuditEvidence,
+  BatchDogfoodChecks,
+  BatchDogfoodContinuationEvidence,
+  BatchDogfoodEvidence,
+  BatchDogfoodFinalReviewEvidence,
+  BatchDogfoodGateDiagnostic,
+  BatchDogfoodGateInput,
+  BatchDogfoodGateResult,
+  BatchDogfoodPrerequisite,
+  BatchDogfoodRecoveryEvidence,
+  BatchDogfoodTicketEvidence,
+} from "./release/batch-dogfood.js";
+export {
   ANTHROPIC_CONTRACT_CAPABILITIES,
   CREDENTIALLESS_FIXTURE_IDS,
   evaluateCredentiallessFixtureMatrix,
