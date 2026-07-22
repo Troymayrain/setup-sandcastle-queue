@@ -404,6 +404,7 @@ export {
 } from "./release/bundle.js";
 export type {
   ReleaseBundleGateResult,
+  ReleaseDogfoodPrerequisiteEvidence,
   ReleaseGateDiagnostic,
   ReleaseGateKind,
   ReleasePrerequisiteEvidence,

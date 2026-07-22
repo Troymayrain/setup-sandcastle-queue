@@ -144,7 +144,7 @@ test("remote doctor runs real-boundary probes with the fast model and uploads a 
   );
 
   assert.equal(result.ok, true);
-  assert.equal(result.binding.installationVersion, "0.1.0");
+  assert.equal(result.binding.installationVersion, "1.0.0");
   assert.match(result.binding.configurationHash, /^[a-f0-9]{64}$/u);
   assert.match(result.binding.workflowSha, /^[a-f0-9]{64}$/u);
   assert.deepEqual(probes.map(({ kind }) => kind).sort(), [

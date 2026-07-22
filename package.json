@@ -1,6 +1,6 @@
 {
   "name": "setup-sandcastle-queue",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Deterministic installer and runtime for a Sandcastle GitHub Issues agent queue.",
   "type": "module",
   "bin": {
@@ -16,6 +16,7 @@
     "Dockerfile",
     "LICENSE",
     "OPERATIONS.md",
+    "RELEASE_NOTES.md",
     "SKILL.md",
     "THIRD_PARTY_NOTICES.md",
     "agents",

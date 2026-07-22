@@ -1,6 +1,6 @@
 {
   "name": "setup-sandcastle-queue-control-plane-dependencies",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.217",

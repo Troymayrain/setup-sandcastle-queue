@@ -119,7 +119,7 @@ test("plan deterministically previews a complete fresh install without repositor
   assert.equal(output.command, "plan");
   assert.equal(output.ok, true);
   assert.equal(output.result.installationState, "fresh");
-  assert.equal(output.result.installerVersion, "0.1.0");
+  assert.equal(output.result.installerVersion, "1.0.0");
   assert.equal(output.result.templateVersion, "1.0.0");
   assert.match(output.result.planHash, /^[a-f0-9]{64}$/u);
   assert.deepEqual(

@@ -85,7 +85,7 @@ test("propose detects an exact Node npm runtime and direct completion commands",
         version: "22.22.2",
       },
     },
-    version: "0.1.0",
+    version: "1.0.0",
   });
   assert.equal(status(repository), before);
 });
@@ -257,7 +257,7 @@ test("resolve-models applies explicit semantic-role fallbacks", () => {
         ticket: "ticket-model",
       },
     },
-    version: "0.1.0",
+    version: "1.0.0",
   });
 });
 

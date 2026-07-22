@@ -27,6 +27,22 @@ on:
         description: Successful manual run containing candidate-bound live evidence
         required: true
         type: string
+      legacy_dogfood_run_id:
+        description: Successful legacy lifecycle dogfood run for this candidate
+        required: true
+        type: string
+      batch_dogfood_run_id:
+        description: Successful three-ticket Batch dogfood run for this candidate
+        required: true
+        type: string
+      dogfood_release_version:
+        description: Exact 0.1.x release exercised by both dogfood runs
+        required: true
+        type: string
+      confirm_dogfood_release_version:
+        description: Repeat the exact 0.1.x dogfood release
+        required: true
+        type: string
 
 permissions: {}
 
@@ -39,6 +55,7 @@ jobs:
       contents: read
     outputs:
       candidate_sha: ${{ steps.authorize.outputs.candidate_sha }}
+      dogfood_release_version: ${{ steps.authorize.outputs.dogfood_release_version }}
       release_tag: ${{ steps.authorize.outputs.release_tag }}
     steps:
       - name: Require a maintainer, one existing tag, and matching package SemVer
@@ -47,7 +64,9 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           CONFIRM_CANDIDATE_SHA: ${{ inputs.confirm_candidate_sha }}
+          CONFIRM_DOGFOOD_RELEASE_VERSION: ${{ inputs.confirm_dogfood_release_version }}
           CONFIRM_RELEASE_TAG: ${{ inputs.confirm_release_tag }}
+          DOGFOOD_RELEASE_VERSION: ${{ inputs.dogfood_release_version }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
@@ -55,7 +74,16 @@ jobs:
           if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ || "$CANDIDATE_SHA" != "$CONFIRM_CANDIDATE_SHA" ]]; then
             exit 2
           fi
-          if [[ ! "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || "$RELEASE_TAG" != "$CONFIRM_RELEASE_TAG" ]]; then
+          if [[ "$RELEASE_TAG" != "1.0.0" ]]; then
+            exit 2
+          fi
+          if [[ "$RELEASE_TAG" != "$CONFIRM_RELEASE_TAG" ]]; then
+            exit 2
+          fi
+          if [[ "$DOGFOOD_RELEASE_VERSION" != "$CONFIRM_DOGFOOD_RELEASE_VERSION" ]]; then
+            exit 2
+          fi
+          if [[ ! "$DOGFOOD_RELEASE_VERSION" =~ ^0\.1\.(0|[1-9][0-9]*)$ ]]; then
             exit 2
           fi
           actor_permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)"
@@ -70,8 +98,11 @@ jobs:
           if [[ "$package_version" != "$RELEASE_TAG" ]]; then
             exit 2
           fi
-          printf 'candidate_sha=%s\n' "$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          {
+            printf 'candidate_sha=%s\n' "$CANDIDATE_SHA"
+            printf 'dogfood_release_version=%s\n' "$DOGFOOD_RELEASE_VERSION"
+            printf 'release_tag=%s\n' "$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
 
   release-gate:
     name: Build and verify every candidate distribution without release credentials
@@ -101,19 +132,31 @@ jobs:
         shell: bash
         env:
           CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          BATCH_DOGFOOD_RUN_ID: ${{ inputs.batch_dogfood_run_id }}
           CREDENTIALLESS_RUN_ID: ${{ inputs.credentialless_run_id }}
           GH_TOKEN: ${{ github.token }}
+          LEGACY_DOGFOOD_RUN_ID: ${{ inputs.legacy_dogfood_run_id }}
           LIVE_E2E_RUN_ID: ${{ inputs.live_e2e_run_id }}
         run: |
           set -euo pipefail
-          if [[ ! "$CREDENTIALLESS_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$LIVE_E2E_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
-            exit 2
-          fi
+          for run_id in "$CREDENTIALLESS_RUN_ID" "$LIVE_E2E_RUN_ID" "$LEGACY_DOGFOOD_RUN_ID" "$BATCH_DOGFOOD_RUN_ID"; do
+            if [[ ! "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+              exit 2
+            fi
+          done
           credentialless_run="$(gh run view "$CREDENTIALLESS_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,name)"
-          live_run="$(gh run view "$LIVE_E2E_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,name)"
+          live_run="$(gh run view "$LIVE_E2E_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,event,name)"
+          legacy_run="$(gh run view "$LEGACY_DOGFOOD_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,event,name)"
+          batch_run="$(gh run view "$BATCH_DOGFOOD_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,event,name)"
           jq -e --arg sha "$CANDIDATE_SHA" '.conclusion == "success" and .headSha == $sha and .name == "CI"' <<<"$credentialless_run" >/dev/null
-          jq -e '.conclusion == "success" and .name == "Sandcastle live E2E release gate"' <<<"$live_run" >/dev/null
-          mkdir -p "$RUNNER_TEMP/prerequisites/credentialless" "$RUNNER_TEMP/prerequisites/live"
+          jq -e '.conclusion == "success" and .event == "workflow_dispatch" and .name == "Sandcastle live E2E release gate"' <<<"$live_run" >/dev/null
+          jq -e '.conclusion == "success" and .event == "workflow_dispatch" and .name == "Sandcastle legacy lifecycle dogfood gate"' <<<"$legacy_run" >/dev/null
+          jq -e '.conclusion == "success" and .event == "workflow_dispatch" and .name == "Sandcastle three-ticket Batch dogfood gate"' <<<"$batch_run" >/dev/null
+          mkdir -p \
+            "$RUNNER_TEMP/prerequisites/credentialless" \
+            "$RUNNER_TEMP/prerequisites/live" \
+            "$RUNNER_TEMP/prerequisites/legacy" \
+            "$RUNNER_TEMP/prerequisites/batch"
           gh run download "$CREDENTIALLESS_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
             --name "sandcastle-credentialless-${CANDIDATE_SHA}" \
@@ -122,23 +165,44 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --name "sandcastle-live-e2e-${CANDIDATE_SHA}" \
             --dir "$RUNNER_TEMP/prerequisites/live"
+          gh run download "$LEGACY_DOGFOOD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "sandcastle-legacy-dogfood-${CANDIDATE_SHA}" \
+            --dir "$RUNNER_TEMP/prerequisites/legacy"
+          gh run download "$BATCH_DOGFOOD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "sandcastle-batch-dogfood-${CANDIDATE_SHA}" \
+            --dir "$RUNNER_TEMP/prerequisites/batch"
 
       - name: Verify prerequisite reports are successful and candidate-bound
         shell: bash
         env:
           CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          DOGFOOD_RELEASE_VERSION: ${{ needs.authorize.outputs.dogfood_release_version }}
+          LEGACY_DOGFOOD_RUN_ID: ${{ inputs.legacy_dogfood_run_id }}
         run: |
           set -euo pipefail
           credentialless_report="$(find "$RUNNER_TEMP/prerequisites/credentialless" -type f -name '*.json' -print -quit)"
           live_report="$(find "$RUNNER_TEMP/prerequisites/live" -type f -name '*.json' -print -quit)"
+          legacy_report="$(find "$RUNNER_TEMP/prerequisites/legacy" -type f -name '*.json' -print -quit)"
+          batch_report="$(find "$RUNNER_TEMP/prerequisites/batch" -type f -name '*.json' -print -quit)"
+          legacy_report_sha="$(sha256sum "$legacy_report" | cut -d' ' -f1)"
           jq -e --arg sha "$CANDIDATE_SHA" \
             '.command == "verify-fixture-matrix" and .ok == true and .result.ok == true and .result.candidateSha == $sha' \
             "$credentialless_report" >/dev/null
           jq -e --arg sha "$CANDIDATE_SHA" \
-            '.command == "verify-live-e2e" and .ok == true and .result.ok == true and .result.candidateSha == $sha' \
+            '.command == "verify-live-e2e" and .ok == true and .result.ok == true and .result.candidateSha == $sha and (.result.fixtures | length == 2 and all(.checks.remoteDoctor == true))' \
             "$live_report" >/dev/null
+          jq -e --arg sha "$CANDIDATE_SHA" --arg version "$DOGFOOD_RELEASE_VERSION" \
+            '.command == "verify-legacy-dogfood" and .ok == true and .result.ok == true and .result.candidateSha == $sha and .result.releaseVersion == $version and (.result.findings | all(.reverified == true))' \
+            "$legacy_report" >/dev/null
+          jq -e --arg legacyReportSha "$legacy_report_sha" --arg legacyRunId "$LEGACY_DOGFOOD_RUN_ID" --arg sha "$CANDIDATE_SHA" --arg version "$DOGFOOD_RELEASE_VERSION" \
+            '.command == "verify-batch-dogfood" and .ok == true and .result.ok == true and .result.candidateSha == $sha and .result.releaseVersion == $version and .result.legacyDogfood.runId == $legacyRunId and .result.legacyDogfood.reportSha256 == $legacyReportSha and .result.audit.sanitized == true and .result.audit.containsRawTranscript == false and .result.audit.containsSecrets == false and .result.finalReview.findingsAfterPath == 0' \
+            "$batch_report" >/dev/null
           cp "$credentialless_report" "$RUNNER_TEMP/credentialless-gate.json"
           cp "$live_report" "$RUNNER_TEMP/live-e2e-gate.json"
+          cp "$legacy_report" "$RUNNER_TEMP/legacy-dogfood-gate.json"
+          cp "$batch_report" "$RUNNER_TEMP/batch-dogfood-gate.json"
 
       - name: Create the source manifest and reproducible package snapshots
         shell: bash
@@ -192,9 +256,12 @@ jobs:
       - name: Assemble and enforce the cross-distribution release contract
         shell: bash
         env:
+          BATCH_DOGFOOD_RUN_ID: ${{ inputs.batch_dogfood_run_id }}
           CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
           CREDENTIALLESS_RUN_ID: ${{ inputs.credentialless_run_id }}
+          DOGFOOD_RELEASE_VERSION: ${{ needs.authorize.outputs.dogfood_release_version }}
           GH_TOKEN: ${{ github.token }}
+          LEGACY_DOGFOOD_RUN_ID: ${{ inputs.legacy_dogfood_run_id }}
           LIVE_E2E_RUN_ID: ${{ inputs.live_e2e_run_id }}
           RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
         run: |
@@ -208,21 +275,32 @@ jobs:
           image_reference="ghcr.io/troymayrain/setup-sandcastle-queue-control-plane@${image_digest}"
           credentialless_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CREDENTIALLESS_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-credentialless-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
           live_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${LIVE_E2E_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-live-e2e-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
+          legacy_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${LEGACY_DOGFOOD_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-legacy-dogfood-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
+          batch_artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BATCH_DOGFOOD_RUN_ID}/artifacts" | jq -r --arg name "sandcastle-batch-dogfood-${CANDIDATE_SHA}" '.artifacts[] | select(.name == $name) | .id')"
           credentialless_sha="$(sha256sum "$RUNNER_TEMP/credentialless-gate.json" | cut -d' ' -f1)"
           live_sha="$(sha256sum "$RUNNER_TEMP/live-e2e-gate.json" | cut -d' ' -f1)"
+          legacy_sha="$(sha256sum "$RUNNER_TEMP/legacy-dogfood-gate.json" | cut -d' ' -f1)"
+          batch_sha="$(sha256sum "$RUNNER_TEMP/batch-dogfood-gate.json" | cut -d' ' -f1)"
           jq -n \
+            --arg batchArtifactId "$batch_artifact_id" \
+            --arg batchRunId "$BATCH_DOGFOOD_RUN_ID" \
+            --arg batchSha "$batch_sha" \
             --arg candidateSha "$CANDIDATE_SHA" \
             --arg credentiallessArtifactId "$credentialless_artifact_id" \
             --arg credentiallessRunId "$CREDENTIALLESS_RUN_ID" \
             --arg credentiallessSha "$credentialless_sha" \
             --arg imageDigest "$image_digest" \
             --arg imageReference "$image_reference" \
+            --arg legacyArtifactId "$legacy_artifact_id" \
+            --arg legacyRunId "$LEGACY_DOGFOOD_RUN_ID" \
+            --arg legacySha "$legacy_sha" \
             --arg liveArtifactId "$live_artifact_id" \
             --arg liveRunId "$LIVE_E2E_RUN_ID" \
             --arg liveSha "$live_sha" \
             --arg npmFilename "$package_filename" \
             --arg npmSha "$npm_sha" \
             --arg releaseTag "$RELEASE_TAG" \
+            --arg testedVersion "$DOGFOOD_RELEASE_VERSION" \
             --arg skillFilename "$skill_filename" \
             --arg skillSha "$skill_sha" \
             --argjson contents "$package_contents" \
@@ -232,6 +310,15 @@ jobs:
               candidateSha: $candidateSha,
               tag: $releaseTag,
               gates: {
+                batchDogfood: {
+                  artifactId: $batchArtifactId,
+                  candidateSha: $candidateSha,
+                  conclusion: "success",
+                  kind: "batch-dogfood",
+                  reportSha256: $batchSha,
+                  runId: $batchRunId,
+                  testedVersion: $testedVersion
+                },
                 credentialless: {
                   artifactId: $credentiallessArtifactId,
                   candidateSha: $candidateSha,
@@ -239,6 +326,15 @@ jobs:
                   kind: "credentialless",
                   reportSha256: $credentiallessSha,
                   runId: $credentiallessRunId
+                },
+                legacyDogfood: {
+                  artifactId: $legacyArtifactId,
+                  candidateSha: $candidateSha,
+                  conclusion: "success",
+                  kind: "legacy-dogfood",
+                  reportSha256: $legacySha,
+                  runId: $legacyRunId,
+                  testedVersion: $testedVersion
                 },
                 liveE2E: {
                   artifactId: $liveArtifactId,
@@ -385,14 +481,62 @@ jobs:
 
       - name: Publish the GitHub Release and skill snapshot from the same tag
         env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
         run: >-
           gh release create "$RELEASE_TAG"
           --repo "$GITHUB_REPOSITORY"
           --verify-tag
+          --target "$CANDIDATE_SHA"
           --title "setup-sandcastle-queue $RELEASE_TAG"
+          --notes-file RELEASE_NOTES.md
           "$RUNNER_TEMP/approved/setup-sandcastle-queue-${RELEASE_TAG}.tgz"
           "$RUNNER_TEMP/approved/setup-sandcastle-queue-skill-${RELEASE_TAG}.tgz"
           "$RUNNER_TEMP/approved/release-manifest.json"
           "$RUNNER_TEMP/approved/release-gate.json"
+
+      - name: Verify published npm and GitHub Release bytes
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/published/npm" "$RUNNER_TEMP/published/github"
+          package_filename=""
+          for _attempt in $(seq 1 30); do
+            if npm pack "setup-sandcastle-queue@${RELEASE_TAG}" \
+              --json \
+              --pack-destination "$RUNNER_TEMP/published/npm" \
+              > "$RUNNER_TEMP/published/npm-pack.json" 2>/dev/null; then
+              package_filename="$(jq -r '.[0].filename' "$RUNNER_TEMP/published/npm-pack.json")"
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "$package_filename" ]]; then
+            exit 3
+          fi
+          approved_npm="$RUNNER_TEMP/approved/setup-sandcastle-queue-${RELEASE_TAG}.tgz"
+          published_npm="$RUNNER_TEMP/published/npm/$package_filename"
+          if [[ "$(sha256sum "$published_npm" | cut -d' ' -f1)" != "$(sha256sum "$approved_npm" | cut -d' ' -f1)" ]]; then
+            exit 3
+          fi
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/published/github"
+          for asset in \
+            "setup-sandcastle-queue-${RELEASE_TAG}.tgz" \
+            "setup-sandcastle-queue-skill-${RELEASE_TAG}.tgz" \
+            release-manifest.json \
+            release-gate.json; do
+            if [[ "$(sha256sum "$RUNNER_TEMP/published/github/$asset" | cut -d' ' -f1)" != "$(sha256sum "$RUNNER_TEMP/approved/$asset" | cut -d' ' -f1)" ]]; then
+              exit 3
+            fi
+          done
+          release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName,targetCommitish)"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tag "$RELEASE_TAG" \
+            '.tagName == $tag and .targetCommitish == $sha and .isDraft == false and .isPrerelease == false' \
+            <<<"$release" >/dev/null

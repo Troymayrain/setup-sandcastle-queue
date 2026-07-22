@@ -172,7 +172,7 @@ test("ordinary installer upgrade preserves the application Go runtime files", as
   const install = await createInstallPlan(repository, config());
   await applyInstallPlan(repository, install, install.planHash);
 
-  const upgrade = await createUpgradePreview(repository, "0.1.0");
+  const upgrade = await createUpgradePreview(repository, "1.0.0");
   assert.equal(
     upgrade.plan.assets.some(({ path }) => ["go.mod", "go.sum"].includes(path)),
     false,

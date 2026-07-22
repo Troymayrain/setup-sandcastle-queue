@@ -22,6 +22,7 @@ const shaPattern = /^[a-f0-9]{40}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
+const dogfoodVersionPattern = /^0\.1\.(0|[1-9][0-9]*)$/u;
 const maximumInputBytes = 4 * 1024 * 1024;
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -58,6 +59,7 @@ const requiredPackageContents = [
   "LICENSE",
   "OPERATIONS.md",
   "README.md",
+  "RELEASE_NOTES.md",
   "SKILL.md",
   "THIRD_PARTY_NOTICES.md",
   "agents/openai.yaml",
@@ -80,6 +82,7 @@ const allowedPackageFiles = new Set([
   "LICENSE",
   "OPERATIONS.md",
   "README.md",
+  "RELEASE_NOTES.md",
   "SKILL.md",
   "THIRD_PARTY_NOTICES.md",
   "package.json",
@@ -102,6 +105,7 @@ export interface ReleaseSourceManifest {
   managedTemplatesSha256: string;
   noticesSha256: string;
   packageLockSha256: string;
+  releaseNotesSha256: string;
   skillHashes: {
     "code-review": string;
     implement: string;
@@ -111,7 +115,11 @@ export interface ReleaseSourceManifest {
   version: string;
 }
 
-export type ReleaseGateKind = "credentialless" | "live-e2e";
+export type ReleaseGateKind =
+  | "batch-dogfood"
+  | "credentialless"
+  | "legacy-dogfood"
+  | "live-e2e";
 
 export interface ReleasePrerequisiteEvidence {
   artifactId: string;
@@ -120,6 +128,12 @@ export interface ReleasePrerequisiteEvidence {
   kind: ReleaseGateKind;
   reportSha256: string;
   runId: string;
+}
+
+export interface ReleaseDogfoodPrerequisiteEvidence
+  extends ReleasePrerequisiteEvidence {
+  kind: "batch-dogfood" | "legacy-dogfood";
+  testedVersion: string;
 }
 
 export interface ReleaseGateDiagnostic {
@@ -131,7 +145,10 @@ export interface ReleaseBundleGateResult {
   candidateSha: string | null;
   diagnostics: ReleaseGateDiagnostic[];
   gates: {
+    batchDogfoodRunId: string;
     credentiallessRunId: string;
+    dogfoodVersion: string;
+    legacyDogfoodRunId: string;
     liveE2ERunId: string;
   } | null;
   image: string | null;
@@ -179,6 +196,7 @@ export function createReleaseSourceManifest(
     managedTemplatesSha256: managedTemplatesHash(),
     noticesSha256: fileHash("THIRD_PARTY_NOTICES.md"),
     packageLockSha256: fileHash("package-lock.json"),
+    releaseNotesSha256: fileHash("RELEASE_NOTES.md"),
     skillHashes: {
       "code-review": RUNTIME_SKILL_HASHES["code-review"],
       implement: RUNTIME_SKILL_HASHES.implement,
@@ -201,6 +219,7 @@ function exactManifest(
       "managedTemplatesSha256",
       "noticesSha256",
       "packageLockSha256",
+      "releaseNotesSha256",
       "skillHashes",
       "tag",
       "version",
@@ -259,6 +278,35 @@ function validPrerequisite(
     sha256Pattern.test(value.reportSha256) &&
     typeof value.runId === "string" &&
     runIdPattern.test(value.runId)
+  );
+}
+
+function validDogfoodPrerequisite(
+  value: unknown,
+  kind: "batch-dogfood" | "legacy-dogfood",
+  candidateSha: string,
+): value is ReleaseDogfoodPrerequisiteEvidence {
+  return (
+    hasExactShape(value, [
+      "artifactId",
+      "candidateSha",
+      "conclusion",
+      "kind",
+      "reportSha256",
+      "runId",
+      "testedVersion",
+    ]) &&
+    typeof value.artifactId === "string" &&
+    runIdPattern.test(value.artifactId) &&
+    value.candidateSha === candidateSha &&
+    value.conclusion === "success" &&
+    value.kind === kind &&
+    typeof value.reportSha256 === "string" &&
+    sha256Pattern.test(value.reportSha256) &&
+    typeof value.runId === "string" &&
+    runIdPattern.test(value.runId) &&
+    typeof value.testedVersion === "string" &&
+    dogfoodVersionPattern.test(value.testedVersion)
   );
 }
 
@@ -390,15 +438,24 @@ function gateResult(
   diagnostics: ReleaseGateDiagnostic[],
   credentialless: ReleasePrerequisiteEvidence | null = null,
   liveE2E: ReleasePrerequisiteEvidence | null = null,
+  legacyDogfood: ReleaseDogfoodPrerequisiteEvidence | null = null,
+  batchDogfood: ReleaseDogfoodPrerequisiteEvidence | null = null,
   image: string | null = null,
 ): ReleaseBundleGateResult {
   return {
     candidateSha,
     diagnostics,
     gates:
-      credentialless && liveE2E
+      credentialless &&
+      liveE2E &&
+      legacyDogfood &&
+      batchDogfood &&
+      legacyDogfood.testedVersion === batchDogfood.testedVersion
         ? {
+            batchDogfoodRunId: batchDogfood.runId,
             credentiallessRunId: credentialless.runId,
+            dogfoodVersion: legacyDogfood.testedVersion,
+            legacyDogfoodRunId: legacyDogfood.runId,
             liveE2ERunId: liveE2E.runId,
           }
         : null,
@@ -470,7 +527,16 @@ export function evaluateReleaseBundleGate(
 
   let credentialless: ReleasePrerequisiteEvidence | null = null;
   let liveE2E: ReleasePrerequisiteEvidence | null = null;
-  if (!hasExactShape(input.gates, ["credentialless", "liveE2E"])) {
+  let legacyDogfood: ReleaseDogfoodPrerequisiteEvidence | null = null;
+  let batchDogfood: ReleaseDogfoodPrerequisiteEvidence | null = null;
+  if (
+    !hasExactShape(input.gates, [
+      "batchDogfood",
+      "credentialless",
+      "legacyDogfood",
+      "liveE2E",
+    ])
+  ) {
     diagnostics.push({
       code: "RELEASE_PREREQUISITE_SET_INVALID",
       message: "The required release gate evidence set is incomplete.",
@@ -500,6 +566,46 @@ export function evaluateReleaseBundleGate(
         code: "RELEASE_LIVE_E2E_GATE_INVALID",
         message:
           "Live E2E evidence is not a successful result for this candidate.",
+      });
+    }
+    if (
+      validDogfoodPrerequisite(
+        input.gates.legacyDogfood,
+        "legacy-dogfood",
+        input.candidateSha,
+      )
+    ) {
+      legacyDogfood = input.gates.legacyDogfood;
+    } else {
+      diagnostics.push({
+        code: "RELEASE_LEGACY_DOGFOOD_GATE_INVALID",
+        message:
+          "Legacy lifecycle dogfood evidence is not a successful 0.1.x result for this candidate.",
+      });
+    }
+    if (
+      validDogfoodPrerequisite(
+        input.gates.batchDogfood,
+        "batch-dogfood",
+        input.candidateSha,
+      )
+    ) {
+      batchDogfood = input.gates.batchDogfood;
+    } else {
+      diagnostics.push({
+        code: "RELEASE_BATCH_DOGFOOD_GATE_INVALID",
+        message:
+          "Three-ticket Batch dogfood evidence is not a successful 0.1.x result for this candidate.",
+      });
+    }
+    if (
+      legacyDogfood &&
+      batchDogfood &&
+      legacyDogfood.testedVersion !== batchDogfood.testedVersion
+    ) {
+      diagnostics.push({
+        code: "RELEASE_DOGFOOD_VERSION_MISMATCH",
+        message: "Both dogfood gates must exercise the same exact 0.1.x release.",
       });
     }
   }
@@ -573,6 +679,8 @@ export function evaluateReleaseBundleGate(
     diagnostics,
     credentialless,
     liveE2E,
+    legacyDogfood,
+    batchDogfood,
     image,
   );
 }

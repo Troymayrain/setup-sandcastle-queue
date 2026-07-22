@@ -177,7 +177,7 @@ test("upgrade previews managed drift as a blocking conflict without overwriting 
   );
   const before = treeHash(repository);
 
-  const result = runCli(["upgrade", "--target", "0.1.0"], repository);
+  const result = runCli(["upgrade", "--target", "1.0.0"], repository);
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
@@ -185,7 +185,7 @@ test("upgrade previews managed drift as a blocking conflict without overwriting 
   assert.equal(output.command, "upgrade");
   assert.equal(output.ok, true);
   assert.equal(output.result.mode, "preview");
-  assert.equal(output.result.plan.upgrade.targetRelease, "0.1.0");
+  assert.equal(output.result.plan.upgrade.targetRelease, "1.0.0");
   assert.deepEqual(
     output.result.conflicts.map(({ path }) => path),
     [".github/workflows/sandcastle.yml"],
@@ -288,7 +288,7 @@ test("upgrade atomically applies a clean exact release and preserves project-own
   });
   writeFileSync(customAdapterPath, '{"schemaVersion":1,"projectOwned":true}\n');
 
-  const previewed = runCli(["upgrade", "--target", "0.1.0"], repository);
+  const previewed = runCli(["upgrade", "--target", "1.0.0"], repository);
   assert.equal(previewed.status, 0, previewed.stderr);
   const preview = JSON.parse(previewed.stdout).result;
   assert.deepEqual(preview.conflicts, []);
@@ -326,7 +326,7 @@ test("upgrade atomically applies a clean exact release and preserves project-own
   );
   assert.equal(
     JSON.parse(readFileSync(manifestPath, "utf8")).installerVersion,
-    "0.1.0",
+    "1.0.0",
   );
   assert.equal(readFileSync(configPath, "utf8"), configBefore);
   assert.equal(
@@ -355,7 +355,7 @@ test("upgrade requires an explicit reviewed diff before migrating project config
     [
       "upgrade",
       "--target",
-      "0.1.0",
+      "1.0.0",
       "--config",
       targetConfigPath,
     ],
@@ -406,7 +406,7 @@ test("upgrade rolls back clean managed updates after a mid-apply failure", () =>
     fileHash(workflowPath);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const previewed = runCli(["upgrade", "--target", "0.1.0"], repository);
+  const previewed = runCli(["upgrade", "--target", "1.0.0"], repository);
   assert.equal(previewed.status, 0, previewed.stderr);
   const plan = JSON.parse(previewed.stdout).result.plan;
   assert.deepEqual(plan.upgrade.conflicts, []);
@@ -481,12 +481,12 @@ test("rollback regenerates an exact historical release with upgrade-equivalent c
     fileHash(workflowPath);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const previewed = runCli(["rollback", "--target", "0.1.0"], repository);
+  const previewed = runCli(["rollback", "--target", "1.0.0"], repository);
 
   assert.equal(previewed.status, 0, previewed.stderr);
   const preview = JSON.parse(previewed.stdout).result;
   assert.equal(preview.mode, "preview");
-  assert.equal(preview.plan.rollback.targetRelease, "0.1.0");
+  assert.equal(preview.plan.rollback.targetRelease, "1.0.0");
   assert.equal(preview.plan.rollback.fromInstallerVersion, "0.2.0");
   assert.deepEqual(preview.conflicts, []);
   assert.match(preview.plan.patch, /-name: Sandcastle Queue 0\.2\.0/u);
@@ -506,7 +506,7 @@ test("rollback regenerates an exact historical release with upgrade-equivalent c
   assert.match(readFileSync(workflowPath, "utf8"), /Managed by setup-sandcastle/u);
   assert.equal(
     JSON.parse(readFileSync(manifestPath, "utf8")).installerVersion,
-    "0.1.0",
+    "1.0.0",
   );
 });
 
@@ -530,7 +530,7 @@ test("rollback blocks locally modified managed assets without force overwrite", 
   );
   const before = treeHash(repository);
 
-  const previewed = runCli(["rollback", "--target", "0.1.0"], repository);
+  const previewed = runCli(["rollback", "--target", "1.0.0"], repository);
   assert.equal(previewed.status, 0, previewed.stderr);
   const plan = JSON.parse(previewed.stdout).result.plan;
   assert.deepEqual(plan.rollback.conflicts.map(({ path }) => path), [

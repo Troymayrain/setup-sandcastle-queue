@@ -152,7 +152,7 @@ test("install atomically applies a confirmed plan beside unrelated dirty files",
       ],
       planHash: plan.planHash,
     },
-    version: "0.1.0",
+    version: "1.0.0",
   });
   assert.equal(readFileSync(join(repository, "README.md"), "utf8"), "# fixture\nlocal edit\n");
   assert.equal(readFileSync(join(repository, "notes.txt"), "utf8"), "untracked user notes\n");
@@ -175,7 +175,7 @@ test("install atomically applies a confirmed plan beside unrelated dirty files",
     JSON.parse(
       readFileSync(join(repository, ".sandcastle", "installation.json"), "utf8"),
     ).installerVersion,
-    "0.1.0",
+    "1.0.0",
   );
 });
 

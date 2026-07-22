@@ -249,7 +249,7 @@ push、issue closure 和 audit comment 无法跨 GitHub API 原子提交。恢�
 ### upgrade
 
 ```bash
-node /path/to/setup-sandcastle-queue/dist/cli.js upgrade --target 0.1.0
+node /path/to/setup-sandcastle-queue/dist/cli.js upgrade --target 1.0.0
 ```
 
 target 必须是当前精确 CLI package 可提供的 SemVer。未修改的 managed assets 可以更新；hash drift 进入 conflict，只输出 candidate diff，不自动 merge 或 force overwrite。项目配置的 schema migration 需要单独提供 config，并把变更纳入 preview。
@@ -267,10 +267,12 @@ node /path/to/setup-sandcastle-queue/dist/cli.js adopt \
 ### rollback
 
 ```bash
-node /path/to/setup-sandcastle-queue/dist/cli.js rollback --target 0.1.0
+node /path/to/setup-sandcastle-queue/dist/cli.js rollback --target 1.0.0
 ```
 
 rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade 相同的 hash、precondition 和 schema checks。当前 CLI 只能恢复它自身携带的精确 release，不会联网解析 floating tag。
+
+从 `1.0.0` 恢复到 `0.1.x` 时，必须使用目标 `0.1.x` 的精确 CLI package 生成 plan；当前 `1.0.0` package 不携带历史 templates，也不会下载或猜测旧版本。
 
 ### legacy lifecycle dogfood gate
 
@@ -301,6 +303,18 @@ rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade �
 - audit timeline 能关联父 PRD、Tickets、sessions、skill receipts、commits、PR 与 runs，且明确不含 raw transcript 或 secrets。
 
 验证成功后保存的报告只包含受限 IDs、hashes、计数、拓扑和状态；任何额外目标 payload、重复身份、超时 checkpoint、stale legacy prerequisite 或不安全 audit 都会被丢弃并 fail closed。当前 `workflow-host` 仍未实现，也没有真实三票成功证据，因此不得把这个 gate 的合同测试记作 Batch dogfood 完成。
+
+### stable `1.0.0` release gate
+
+`.github/workflows/release.yml` 只接受 exact `1.0.0` tag，并要求重复确认 candidate SHA、tag 与同一个 exact `0.1.x` dogfood release。release-gate job 在任何 npm 或 GHCR 凭据进入 runner 前完成以下检查：
+
+- candidate-bound credentialless fixture/contract CI 与 live E2E 报告成功，且两组 live fixtures 都包含 successful remote doctor；
+- legacy lifecycle 与三票 Batch dogfood 报告都绑定同一 candidate 和 `0.1.x`，Batch 报告引用相同 legacy run，dogfood findings 已 reverify，Final Review findings 为零；
+- npm tarball、skill snapshot、GitHub Release asset plan 与 `linux/amd64` control-plane image 共享 `1.0.0`、source manifest、dependency locks、checksums 和 immutable digest；
+- `RELEASE_NOTES.md` 随 package 分发，并作为 GitHub Release notes，覆盖支持边界、已知限制、安全模型和 `0.1.x` upgrade；
+- publish 后重新下载 npm package 与全部 GitHub Release assets 比较 SHA-256，并验证 GHCR pushed digest、tag target 与 release state。
+
+缺少任一真实 gate artifact 时 publish job 不可达。当前候选因 `workflow-host` 缺失而无法通过 remote doctor/live E2E 与 Batch dogfood，所以没有创建 tag、push、npm publish、GitHub Release 或 GHCR publish；版本号与 release notes 只表示待验证候选，不表示已经发布。
 
 ### uninstall
 

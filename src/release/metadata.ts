@@ -3,7 +3,7 @@ export const CONTROL_PLANE_NODE_VERSION = "22.22.2";
 export const CONTROL_PLANE_IMAGE_REPOSITORY =
   "ghcr.io/troymayrain/setup-sandcastle-queue-control-plane";
 export const CONTROL_PLANE_IMAGE_DIGEST_HEX =
-  "c172347e358d73716d248fa2ac3f09cc93a5e48441e892e8db636e0e381544e5";
+  "fba23a85a9db2bda0c20e628d48655a935b14ab5f7358ed1d434b6f2987fa159";
 export const CONTROL_PLANE_IMAGE_DIGEST =
   `sha256:${CONTROL_PLANE_IMAGE_DIGEST_HEX}`;
 export const CONTROL_PLANE_IMAGE =

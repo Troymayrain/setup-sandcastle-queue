@@ -348,7 +348,7 @@ for (const fixture of fixtureIds) {
     const workflowPath = join(repository, ".github", "workflows", "sandcastle.yml");
     const workflow = readFileSync(workflowPath, "utf8");
     writeFileSync(workflowPath, `${workflow}# fixture drift\n`);
-    const conflicted = await api.createUpgradePreview(repository, "0.1.0");
+    const conflicted = await api.createUpgradePreview(repository, "1.0.0");
     assert.equal(
       conflicted.conflicts.some(
         ({ path }) => path === ".github/workflows/sandcastle.yml",
@@ -362,12 +362,12 @@ for (const fixture of fixtureIds) {
     manifest.installerVersion = "0.2.0";
     manifest.templateVersion = "2.0.0";
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    const rollback = await api.createRollbackPreview(repository, "0.1.0");
+    const rollback = await api.createRollbackPreview(repository, "1.0.0");
     assert.equal(rollback.plan.rollback.fromInstallerVersion, "0.2.0");
     await api.applyRollbackPlan(repository, rollback.plan, rollback.plan.planHash);
     assert.equal(
       JSON.parse(readFileSync(manifestPath, "utf8")).installerVersion,
-      "0.1.0",
+      "1.0.0",
     );
   });
 }
