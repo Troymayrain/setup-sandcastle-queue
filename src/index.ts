@@ -61,7 +61,21 @@ export {
 } from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
 export { proposeRuntime } from "./runtime/detect.js";
-export type { BuiltInAdapter, RuntimeProposal } from "./runtime/detect.js";
+export type {
+  BuiltInAdapter,
+  RuntimeAdapterPlan,
+  RuntimeEnvironmentInput,
+  RuntimeProposal,
+} from "./runtime/detect.js";
+export { executeRuntimeAdapter } from "./runtime/execute.js";
+export type {
+  RuntimeAdapterCommandResult,
+  RuntimeAdapterExecutionOptions,
+  RuntimeAdapterExecutionRecord,
+  RuntimeAdapterExecutionResult,
+  RuntimeAdapterPhase,
+  RuntimeAdapterRuntime,
+} from "./runtime/execute.js";
 export {
   applyGitHubConfiguration,
   inspectGitHubEnvironmentResources,

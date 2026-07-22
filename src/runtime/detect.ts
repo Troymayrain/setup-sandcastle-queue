@@ -6,6 +6,7 @@ import {
   InfrastructureError,
   type CommandSpec,
 } from "../config.js";
+import { sha256 } from "../hash.js";
 import { resolveRepositoryRoot } from "../installer/plan.js";
 
 export type BuiltInAdapter =
@@ -16,6 +17,7 @@ export type BuiltInAdapter =
   | "python-uv";
 
 export interface RuntimeProposal {
+  adapterPlan?: RuntimeAdapterPlan;
   commands: {
     tests: CommandSpec[];
     verification: CommandSpec[];
@@ -26,6 +28,20 @@ export interface RuntimeProposal {
     signals: string[];
     version: string;
   };
+}
+
+export interface RuntimeEnvironmentInput {
+  path: string;
+  sha256: string;
+}
+
+export interface RuntimeAdapterPlan {
+  bootstrap: CommandSpec[];
+  environment: {
+    inputs: RuntimeEnvironmentInput[];
+    probe?: CommandSpec;
+  };
+  networkHosts: string[];
 }
 
 interface RuntimeConfirmation {
@@ -56,6 +72,73 @@ function exactVersion(value: string): string | null {
   )
     ? normalized
     : null;
+}
+
+function pythonDependencyName(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?$/u.test(
+    value,
+  );
+}
+
+function pythonDependencyVersion(value: string): boolean {
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9.!+_-]*$/u.test(value) &&
+    !value.includes("*")
+  );
+}
+
+function assertExactPipRequirements(source: string): void {
+  const requirements = source
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (
+    requirements.length === 0 ||
+    requirements.some((line) => {
+      const equality = line.indexOf("==");
+      return (
+        equality <= 0 ||
+        line.indexOf("==", equality + 2) >= 0 ||
+        !pythonDependencyName(line.slice(0, equality)) ||
+        !pythonDependencyVersion(line.slice(equality + 2))
+      );
+    })
+  ) {
+    throw detectionError(
+      "PIP_DEPENDENCY_NOT_EXACT",
+      "Python/pip direct dependencies must use exact name==version requirements.",
+    );
+  }
+}
+
+function assertValidUvLock(source: string): void {
+  const version = source.match(/^version\s*=\s*([0-9]+)\s*$/mu)?.[1];
+  const packages = source.split(/^\[\[package\]\]\s*$/mu).slice(1);
+  if (
+    version !== "1" ||
+    packages.length === 0 ||
+    packages.some((block) => {
+      const name = block.match(/^name\s*=\s*["']([^"']+)["']\s*$/mu)?.[1];
+      const packageVersion = block.match(
+        /^version\s*=\s*["']([^"']+)["']\s*$/mu,
+      )?.[1];
+      return (
+        !name ||
+        !pythonDependencyName(name) ||
+        !packageVersion ||
+        !pythonDependencyVersion(packageVersion)
+      );
+    })
+  ) {
+    throw detectionError(
+      "UV_LOCK_INVALID",
+      "Python/uv requires a valid versioned lock with exact package versions.",
+    );
+  }
+}
+
+function environmentInput(path: string, source: string): RuntimeEnvironmentInput {
+  return { path, sha256: sha256(source) };
 }
 
 async function nodeProposal(
@@ -160,10 +243,24 @@ async function pythonProposal(
 ): Promise<RuntimeProposal | null> {
   const uvLockPath = join(repository, "uv.lock");
   const requirementsPath = join(repository, "requirements.txt");
+  const pyprojectPath = join(repository, "pyproject.toml");
   const hasUvLock = await pathExists(uvLockPath);
   const hasRequirements = await pathExists(requirementsPath);
-  if (!hasUvLock && !hasRequirements) {
+  const hasPyproject = await pathExists(pyprojectPath);
+  if (!hasUvLock && !hasRequirements && !hasPyproject) {
     return null;
+  }
+  if (!hasUvLock && hasPyproject && !hasRequirements) {
+    throw detectionError(
+      "UV_LOCK_REQUIRED",
+      "Python/uv projects require uv.lock before execution can be proposed.",
+    );
+  }
+  if (hasUvLock && !hasPyproject) {
+    throw detectionError(
+      "UV_LOCK_INVALID",
+      "Python/uv requires uv.lock beside pyproject.toml.",
+    );
   }
   const adapter: BuiltInAdapter = hasUvLock ? "python-uv" : "python-pip";
   const versions: Array<{ source: string; version: string }> = [];
@@ -177,12 +274,19 @@ async function pythonProposal(
       hasInvalidVersionDeclaration = true;
     }
   }
-  const pyprojectPath = join(repository, "pyproject.toml");
-  let dependencyText = hasRequirements
+  const requirements = hasRequirements
     ? await readFile(requirementsPath, "utf8")
     : "";
-  if (await pathExists(pyprojectPath)) {
-    const pyproject = await readFile(pyprojectPath, "utf8");
+  if (adapter === "python-pip") {
+    assertExactPipRequirements(requirements);
+  }
+  const pyproject = hasPyproject ? await readFile(pyprojectPath, "utf8") : "";
+  const uvLock = hasUvLock ? await readFile(uvLockPath, "utf8") : "";
+  if (adapter === "python-uv") {
+    assertValidUvLock(uvLock);
+  }
+  let dependencyText = requirements;
+  if (hasPyproject) {
     dependencyText += `\n${pyproject}`;
     const match = pyproject.match(/^requires-python\s*=\s*["']([^"']+)["']/mu);
     if (match?.[1]) {
@@ -230,7 +334,10 @@ async function pythonProposal(
     );
   }
 
-  const commandPrefix = adapter === "python-uv" ? ["uv", "run"] : ["python", "-m"];
+  const commandPrefix =
+    adapter === "python-uv"
+      ? ["uv", "run", "--frozen"]
+      : ["python", "-m"];
   const verification: CommandSpec[] = [];
   if (/(?:^|[^A-Za-z0-9_-])mypy(?:[^A-Za-z0-9_-]|$)/u.test(dependencyText)) {
     verification.push({ argv: [...commandPrefix, "mypy", "."] });
@@ -239,6 +346,39 @@ async function pythonProposal(
     verification.push({ argv: [...commandPrefix, "ruff", "check", "."] });
   }
   return {
+    adapterPlan:
+      adapter === "python-uv"
+        ? {
+            bootstrap: [{ argv: ["uv", "sync", "--frozen"] }],
+            environment: {
+              inputs: [
+                environmentInput("pyproject.toml", pyproject),
+                environmentInput("uv.lock", uvLock),
+              ],
+            },
+            networkHosts: ["files.pythonhosted.org", "pypi.org"],
+          }
+        : {
+            bootstrap: [
+              {
+                argv: [
+                  "python",
+                  "-m",
+                  "pip",
+                  "install",
+                  "--disable-pip-version-check",
+                  "--no-input",
+                  "--requirement",
+                  "requirements.txt",
+                ],
+              },
+            ],
+            environment: {
+              inputs: [environmentInput("requirements.txt", requirements)],
+              probe: { argv: ["python", "-m", "pip", "freeze", "--all"] },
+            },
+            networkHosts: ["files.pythonhosted.org", "pypi.org"],
+          },
     commands: {
       tests: [{ argv: [...commandPrefix, "pytest"] }],
       verification,

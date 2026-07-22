@@ -141,6 +141,33 @@ test("propose requires an explicit adapter choice for a mixed runtime repository
   );
   assert.equal(confirmed.status, 0, confirmed.stderr);
   assert.deepEqual(JSON.parse(confirmed.stdout).result, {
+    adapterPlan: {
+      bootstrap: [
+        {
+          argv: [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "--requirement",
+            "requirements.txt",
+          ],
+        },
+      ],
+      environment: {
+        inputs: [
+          {
+            path: "requirements.txt",
+            sha256:
+              "a0e201ecda2bc871726ea3bb5db9cfe6b2109f60d8da88eecf910b790794b03d",
+          },
+        ],
+        probe: { argv: ["python", "-m", "pip", "freeze", "--all"] },
+      },
+      networkHosts: ["files.pythonhosted.org", "pypi.org"],
+    },
     commands: {
       tests: [{ argv: ["python", "-m", "pytest"] }],
       verification: [],
