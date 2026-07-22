@@ -13,6 +13,7 @@
     }
   },
   "files": [
+    "OPERATIONS.md",
     "SKILL.md",
     "THIRD_PARTY_NOTICES.md",
     "agents",

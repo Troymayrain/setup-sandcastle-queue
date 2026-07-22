@@ -1,0 +1,308 @@
+# Sandcastle Queue 安全使用与运维手册
+
+这份手册面向第一次接手仓库的维护者。命令示例默认已经构建本仓库，并把 CLI 路径记为 `/path/to/setup-sandcastle-queue/dist/cli.js`。所有命令都应在目标 Git 仓库中运行。
+
+## 当前可用边界
+
+本地 installer、GitHub resource 配置、runtime adapters、sandbox policy、ticket publication primitives、Final Review state machine、audit、credentialless CI 和 release evidence validators 已实现并有测试。managed `.github/workflows/sandcastle.yml` 中的 `sandcastle-queue workflow-host` 尚未实现，CLI 会把该命令作为未知命令返回 exit status 2。这个 fail closed 行为会阻止真实 Actions Batch 完成。
+
+在 `workflow-host` 有真实 dispatcher、候选 commit 的 credentialless gate 与 live E2E gate 都通过之前，只使用本地安装和检查能力。不要手工替换 workflow 中的命令，也不要上传伪造 evidence 来绕过 release gate。
+
+## Quickstart
+
+### 1. 检查工具和目标仓库
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js version
+git remote get-url origin
+```
+
+CLI 要求 Node.js 22。目标必须是 Git repository，`origin` 必须指向 GitHub.com。installer 可以与无关的 dirty files 共存，但不会 `stash`、`reset`、`checkout`、stage、commit 或 push。
+
+### 2. 检测 runtime
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js propose
+```
+
+输出包含 adapter、精确 runtime version、dependency bootstrap、tests 和 verification commands。多个 runtime 同时出现时，检测会返回 `AMBIGUOUS_RUNTIME`；按维护者确认的 adapter 重试：
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js propose \
+  --confirm-runtime python-pip@3.12.8
+```
+
+mixed repository 应配置 `composite`，不要通过挑一个 adapter 隐藏其余工具链。
+
+### 3. 创建并校验配置
+
+配置必须符合 [`schema/config.schema.json`](./schema/config.schema.json)。下面是 Node/npm 的最小完整示例：
+
+```json
+{
+  "schemaVersion": 1,
+  "queue": {
+    "readyLabel": "ready-for-agent",
+    "ownershipLabel": "sandcastle"
+  },
+  "runtime": {
+    "adapter": "node-npm",
+    "version": "22.22.2"
+  },
+  "commands": {
+    "tests": [{ "argv": ["npm", "test"] }],
+    "verification": [{ "argv": ["npm", "run", "typecheck"] }]
+  },
+  "provider": {
+    "kind": "anthropic-compatible",
+    "models": { "ticket": "ticket-model" }
+  },
+  "execution": {
+    "jobTimeoutMinutes": 350,
+    "processingBudgetMinutes": 300,
+    "ticketTimeoutMinutes": 120,
+    "minimumRemainingMinutes": 140,
+    "maxTicketsPerRun": 3
+  },
+  "audit": { "retentionDays": 30 }
+}
+```
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js validate-config \
+  --config /tmp/sandcastle-config.json
+```
+
+配置只保存静态策略，不保存 token、Base URL 值、repository identity、issue number、branch 或运行状态。
+
+### 4. 预览并应用
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js plan \
+  --config /tmp/sandcastle-config.json \
+  > /tmp/sandcastle-plan-output.json
+jq '.result' /tmp/sandcastle-plan-output.json > /tmp/sandcastle-plan.json
+```
+
+检查 `patch`、`assets`、`preconditions`、`installationState` 和 `planHash`。只有同一份 plan 仍符合 HEAD、index 与目标文件 preconditions 时才能应用：
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js install \
+  --plan /tmp/sandcastle-plan.json \
+  --confirm "$(jq -r '.planHash' /tmp/sandcastle-plan.json)"
+```
+
+写入过程是原子的。中途失败会恢复已经触及的 candidate files，不会处理无关文件。
+
+### 5. 凭据暂缺时保存 pending plan
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js plan \
+  --config /tmp/sandcastle-config.json \
+  --save-pending
+node /path/to/setup-sandcastle-queue/dist/cli.js plan --resume-pending
+```
+
+pending state 位于 Git directory 的 `sandcastle/pending-plan.json`，不会进入 worktree 或 commit，也不会保存 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_BASE_URL`。目标 HEAD、index 或候选内容变化后会返回 `PENDING_PLAN_STALE`，此时重新 plan，不要编辑 pending 文件。
+
+## 安装状态和文件所有权
+
+`fresh` 表示没有 Sandcastle assets，可走普通 install；`managed` 表示存在有效 `.sandcastle/installation.json`，相同版本 reinstall 应得到空 patch；`unmanaged` 表示发现旧 Sandcastle assets 但没有可信 manifest，普通 install 会要求显式 adopt。
+
+installer-managed files 包括 workflow、runtime skill snapshots、skill lock、provenance 和 notices。`.sandcastle/config.json` 与 `docs/agents/sandcastle-queue.md` 创建后归项目所有，upgrade 不覆盖本地修改。`.sandcastle/installation.json` 记录 installer/template version 与 managed hashes，是 doctor、upgrade、rollback 和 uninstall 的判断依据。
+
+## 配置 schema
+
+| Section | 用途 | 关键约束 |
+| --- | --- | --- |
+| `queue` | ready 与 ownership labels | 两个 label 独立；只有同时满足才可执行 |
+| `runtime` | adapter、应用 runtime、工具和额外 hosts | version 必须是精确 SemVer；拒绝 unknown fields |
+| `commands` | host 强制执行的 tests 与 verification | `tests` 至少一条；每条使用直接 `argv`，不走 shell |
+| `provider` | Anthropic-compatible provider 与 model roles | `ticket` 必填；`finalReview`、`finalFix`、`fast` 可回退 |
+| `execution` | job、processing、ticket 和 continuation 限制 | job 不超过 350 分钟，每 run 最多三票 |
+| `audit` | 短期 artifact retention | 1 到 90 天 |
+
+`networkHosts` 只接受精确 public DNS hostname，拒绝 wildcard、URL、IP、CIDR、localhost、host network 和 Docker socket。provider Base URL 使用 GitHub Environment variable `ANTHROPIC_BASE_URL`，长期 token 使用 Environment secret `ANTHROPIC_AUTH_TOKEN`。
+
+## GitHub setup
+
+先以只读方式预览 labels、Environment 和高权限设置：
+
+```bash
+GITHUB_TOKEN=... \
+ANTHROPIC_BASE_URL=https://provider.example.com \
+ANTHROPIC_AUTH_TOKEN=... \
+node /path/to/setup-sandcastle-queue/dist/cli.js configure-github \
+  --config .sandcastle/config.json
+```
+
+输出会区分自动可管理 resources 与人工事项。确认创建或复用 labels、`sandcastle` Environment、provider variable 和 provider secret 后，显式列出全部四类：
+
+```bash
+GITHUB_TOKEN=... \
+ANTHROPIC_BASE_URL=https://provider.example.com \
+ANTHROPIC_AUTH_TOKEN=... \
+node /path/to/setup-sandcastle-queue/dist/cli.js configure-github \
+  --config .sandcastle/config.json \
+  --confirm-resources labels,environment,provider-variable,provider-secret
+```
+
+工具不会创建 PAT、GitHub App、branch protection、ruleset、organization policy、Actions 高权限设置或 Environment required reviewers。维护者必须按 preview diagnostics 在 GitHub UI 中处理这些事项。
+
+## Local doctor 与 remote doctor
+
+安装后先运行不接触网络的检查：
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js doctor --offline
+```
+
+offline mode 检查 config schema、managed hashes、runtime skills、runtime/command 一致性和 workflow security contract。完整 local doctor 还会读取 GitHub labels、Environment resources、repository settings 与 candidate-bound remote doctor artifact：
+
+```bash
+GITHUB_TOKEN=... \
+ANTHROPIC_BASE_URL=https://provider.example.com \
+ANTHROPIC_AUTH_TOKEN=... \
+node /path/to/setup-sandcastle-queue/dist/cli.js doctor
+```
+
+remote-doctor operation 只允许 dedicated `workflow_dispatch` job，使用 `fast` model 验证 credential、broker、sandbox、network policy、job permissions 和 artifact upload。成功 artifact 绑定 installation version、configuration hash 与 workflow SHA。当前 `workflow-host` 尚未实现，所以 managed workflow 不能真正执行 remote-doctor；本地 doctor 会保留失败或缺失诊断，不会把它当作通过。
+
+## Batch 与 Ticket 状态
+
+| Term | 含义 |
+| --- | --- |
+| Batch | 一个父 PRD 下的一次受控交付，拥有稳定 ID、branch、draft PR 和 audit timeline |
+| Ticket | 正文唯一 `## Parent` 指向该父 PRD 的子 issue |
+| Frontier | 当前同时满足 open、ready label、ownership label、无 assignee、无 native blocker 的 Tickets |
+| Continuation Run | 同一 Batch 达到三票或时间阈值后的后续 run，重新读取 GitHub state，并校验 expected HEAD |
+| Published Commit | host 从单票 verified diff 创建并 atomic push 的唯一 commit，带 Batch、Ticket、Session trailers |
+| Final Review | 对累计 diff 的 Standards 与 Spec 双轴检查，两轴都无 actionable finding 才通过 |
+
+`status --parent <issue>` 是只读入口。`start --parent <issue>` 先列出只缺 ownership label 的 enrollment candidates；维护者用 `--enroll 2,3` 或 `--enroll none` 固定选择，再确认返回的 `confirmationHash`。runner 不会因为 issue 内容或 ready label 自动补 ownership label。
+
+处理状态包括 `awaiting-enrollment`、`blocked`、`executable`、`published`、`waiting-no-change`、`checkpointed`、`failed` 与 `stale-continuation`。所有子票都关闭后才进入 Final Review。当前 Actions dispatcher 缺失，不要实际执行 start；否则 initialization 之后的 process job 会 fail closed。
+
+## no-change 与 abort
+
+Agent 没有产生 diff 时不会创建 empty commit，也不会自动关闭 Ticket。host 先记录 `waiting-no-change` candidate，维护者再通过人工 `workflow_dispatch` 接受理由。全部 Tickets 都是 no-change 时，Batch 进入 `completed-no-change`，不创建空 PR；父 PRD 需要独立的人工 completion decision。
+
+abort 要求没有 active processing run。它校验 Batch、HEAD 和 draft PR，保留 Batch branch，关闭 draft PR，并重新打开由该 Batch 关闭但尚未进入默认分支的 Tickets。abort audit 使用不可变 decision records，跨 API 中断后可以继续同一个决定，不会无界重试。
+
+## 安全模型
+
+### credential broker
+
+真实 provider token 只进入 host 侧 credential broker。每个 Agent session 得到绑定 Batch、scope、model allowlist 和期限的一次性 token。broker audit 只记录 timestamp、model、status、latency 与 usage，不记录 request/response body。sandbox 不获得 GitHub token 或长期 provider token。
+
+### sandbox network
+
+bootstrap、Agent 与 verification 在 internal Docker network 中运行，经 `sandcastle-egress` proxy 访问 adapter registry allowlist 和明确配置的 hosts。容器使用 read-only filesystem、drop all capabilities、`no-new-privileges`、受限 PID、非 root user，并拒绝 caller 提供 `--network`、`--mount`、`--privileged` 或 Docker socket。
+
+### protected paths
+
+以下内容不能由 Ticket Agent 修改并发布：
+
+- `.github/workflows/sandcastle.yml`
+- `.github/actions/sandcastle/`
+- `.sandcastle/`
+- `skills-lock.json`
+- `.agents/skills/code-review/`
+- `.agents/skills/implement/`
+- `.agents/skills/tdd/`
+- `.agents/skills/sandcastle-runtime/`
+
+host 在 commit/push 前同时检查 tracked 与 untracked changes。发现 protected paths 后返回 `PROTECTED_PATH_MODIFIED`，不会退回不受限模式。
+
+### operation permissions
+
+workflow 顶层不授予权限，job 按 operation 单独声明。`process` 与 `final-fix` 可以写 contents、issues、pull requests 和 Actions；`review-only` 只读 contents，但可写 issues、pull requests 和 Actions；`abort` 只读 contents 与 Actions，可写 issues 和 pull requests；`remote-doctor` 只读 contents，只为 artifact upload 写 Actions，不授予 issue 或 pull request 权限。sandbox 发出的 capability request 一律拒绝。
+
+### threat boundary
+
+这些边界限制 prompt injection 或恶意 repository code 能拿到的凭据和 GitHub 副作用，但不能让已授权的 model call 变成零风险。host、GitHub Actions runner、provider、public registries、固定 control-plane image 和维护者确认仍属于 trusted computing base。私有 registries、submodules/LFS credentials、self-hosted runner、arbitrary internet、host network 与 Docker socket 不在支持范围内。
+
+## Runtime adapter 指南
+
+| Adapter | 必需输入 | Bootstrap 与环境身份 | 锁定规则 |
+| --- | --- | --- | --- |
+| `python-pip` | `.python-version`、`requirements.txt` | `python -m pip install ...`，随后 `pip freeze --all` | direct dependency 只能用 `name==version` |
+| `python-uv` | `.python-version`、`pyproject.toml`、`uv.lock` | `uv sync --frozen`，所有命令带 `--frozen` | lock 必须包含 exact package versions |
+| `node-npm` | `.nvmrc` 或 exact `engines.node`、`package-lock.json` | `npm ci` | 只接受 lockfile v2/v3，package identity 必须匹配 |
+| `go-module` | `go.mod`，有 dependencies 时还需 `go.sum` | `go mod download`、`go mod verify` | `go` 与 `toolchain` 使用相同 exact patch，校验 sums |
+| `java-maven` | `.java-version`、`pom.xml`、Maven Wrapper | strict-checksum `dependency:go-offline` | JDK 21 exact patch、官方 exact Maven URL、SHA-256，拒绝 SNAPSHOT/range |
+| `composite` | 至少两个内置 adapters | 按人工确认顺序 bootstrap，再执行全部 tests/verification | schema v1，记录每个 component exact version |
+| `custom` | project-owned config | 直接 `argv` bootstrap、tests、verification | schema v1、exact version、exact hosts，拒绝 shell 与 Docker escape |
+
+每次 bootstrap 都会计算 resolved environment hash。Continuation Run 先重算该身份，不一致时进入 `environment-drift`，不会继续执行旧环境上的 Ticket。
+
+## Audit 与 reconciliation
+
+每个 run 产生一条长期 summary comment 和一个短期 sanitized JSON artifact。audit 关联 Batch、run/predecessor、start/end HEAD、Ticket、Session、Published Commit、skills receipts、runtime hashes、review heads、timing 与 outcome。它不保存 raw transcript、prompt/response、token、完整环境变量或完整命令输出。无 PR 的 no-change Batch 使用父 PRD comments。
+
+push、issue closure 和 audit comment 无法跨 GitHub API 原子提交。恢复时以 remote reachable Published Commit 为权威：push 已完成而 issue 仍 open 时补 closure；closed issue 缺少合法 commit 或 completion record 时 fail closed；重复或冲突 commit、unexpected remote HEAD、Batch metadata mismatch 都进入 reconciliation failure，不会重新实现同一 Ticket。
+
+## Upgrade、adopt、rollback 与 uninstall
+
+这些命令都先返回 preview/plan，应用时必须保存 `.result.plan` 并确认其 `planHash`。
+
+### upgrade
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js upgrade --target 0.1.0
+```
+
+target 必须是当前精确 CLI package 可提供的 SemVer。未修改的 managed assets 可以更新；hash drift 进入 conflict，只输出 candidate diff，不自动 merge 或 force overwrite。项目配置的 schema migration 需要单独提供 config，并把变更纳入 preview。
+
+### adopt
+
+adopt 只接受 quiescent legacy repository：没有 queued/running legacy workflow，旧 integration PR 已完成，或维护者用 `--confirm-pr-opt-out <numbers>` 明确退出管理。它识别 Sandcastle-specific skill patches，把扩展迁到 wrapper，再恢复受控 upstream snapshot。失败不会留下 partial install。
+
+```bash
+GITHUB_TOKEN=... \
+node /path/to/setup-sandcastle-queue/dist/cli.js adopt \
+  --config /tmp/sandcastle-config.json
+```
+
+### rollback
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js rollback --target 0.1.0
+```
+
+rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade 相同的 hash、precondition 和 schema checks。当前 CLI 只能恢复它自身携带的精确 release，不会联网解析 floating tag。
+
+### uninstall
+
+```bash
+node /path/to/setup-sandcastle-queue/dist/cli.js uninstall
+```
+
+uninstall preview 只删除 hash 仍匹配的 installer-managed assets。默认保留项目配置、project-owned Agent docs、audit history、GitHub labels、Environment、secrets、历史 PR/comments/artifacts 和修改过的 managed files。应用前检查 removal 与 preserved entries，不能用 uninstall 当作强制清理。
+
+## Final Review、base drift 与 human fix
+
+Final Review 固定 Batch HEAD 和当前 default-branch target base，在 temporary merge result 上运行完整 tests 与 verification。Standards 和 Spec 两个 axes 都要返回与 HEAD 匹配的有效 evidence，任何 actionable finding 都会阻止 PR ready。
+
+自动状态固定为 `review-0`、`fix-1`、`review-1`、`fix-2`、`review-2`。两轮 fix 后仍有 finding 时进入 `needs-human-fix`。人工追加的 human fix 必须线性、可达且不触及 protected paths，之后只允许完整 `review-only`，自动 fix quota 不会重置。
+
+target base 第一次变化可以进入一次 replacement review；再次变化进入 `base-moving`。merge conflict 进入 `needs-base-resolution`，唯一允许的人工 base merge 必须以审计记录中的 Batch HEAD 和 target base 为精确 parents。unknown commit、unexpected merge、non-linear history 或 force-push 进入 `needs-reconcile`。
+
+## 故障排查
+
+| 诊断或状态 | 检查与处理 |
+| --- | --- |
+| `AMBIGUOUS_RUNTIME` | 列出所有 runtime signals，使用 `composite` 或确认一个确实代表完整项目的 adapter |
+| `PENDING_PLAN_STALE` | repository state 已变化，重新生成 plan 并再次审阅 patch |
+| `MANAGED_FILE_DRIFT` | 不要覆盖，确认 drift 来源后走 upgrade conflict 或人工恢复 |
+| `GITHUB_*_MISSING` | 补齐 token、Environment resource 或人工 repository settings，再运行 full doctor |
+| `REMOTE_DOCTOR_MISSING` / `FAILED` / `STALE` | 检查 candidate binding 与 sanitized artifact；当前版本还需等待 `workflow-host` dispatcher |
+| `ENVIRONMENT_DRIFT` / `environment-drift` | 恢复 lock/runtime identity，重新 bootstrap，不要继续旧 continuation |
+| `PROTECTED_PATH_MODIFIED` | 从 Ticket diff 移除 control-plane 修改；需要升级时走 installer lifecycle |
+| `waiting-no-change` | 人工核对 spec 和原始 HEAD，再决定 accept-no-change |
+| `stale-continuation` | 以 GitHub remote HEAD 和 Batch state 为准，不要重复执行 Ticket |
+| `needs-human-fix` | 在现有 Batch branch 追加受限 human fix，然后运行完整 review-only |
+| `needs-base-resolution` | 只创建精确双 parent 的 audited base merge，再 review-only |
+| `base-moving` / `needs-reconcile` | 停止自动处理，审计 branch、HEAD、PR 与 commit graph 后人工决定 |
+
+所有错误都应保留 CLI JSON、exit status、GitHub run URL 和 sanitized artifact。不要把 provider response body、raw transcript、token、完整环境变量或不受控命令输出贴到 issue 或 PR。
