@@ -223,6 +223,22 @@ export type {
   FinalReviewProgress,
   HumanFinalFixInput,
 } from "./final-review/fix.js";
+export {
+  acceptHumanBaseMerge,
+  createFinalReviewBaseProgress,
+  recordFinalReviewBaseFailure,
+  reconcileFinalReviewBase,
+} from "./final-review/base.js";
+export type {
+  FinalReviewBaseFailure,
+  FinalReviewBaseHistoryEvent,
+  FinalReviewBasePhase,
+  FinalReviewBaseProgress,
+  FinalReviewBaseRuntime,
+  FinalReviewRefOptions,
+  HumanBaseMergeInput,
+  ReplacementFinalReviewInput,
+} from "./final-review/base.js";
 export type {
   FrontierResult,
   FrontierTicket,

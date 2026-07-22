@@ -507,13 +507,10 @@ export async function acceptHumanFinalFix(
   input: HumanFinalFixInput,
 ): Promise<FinalReviewProgress> {
   validateProgress(progress);
-  if (
-    progress.phase !== "needs-human-fix" &&
-    progress.phase !== "needs-base-resolution"
-  ) {
+  if (progress.phase !== "needs-human-fix") {
     throw infrastructureError(
       "HUMAN_FIX_NOT_ALLOWED",
-      "Human final fixes are allowed only from an explicit recovery state.",
+      "Human final fixes are allowed only after automatic final fixes are exhausted.",
     );
   }
   if (
