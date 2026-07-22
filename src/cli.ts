@@ -65,6 +65,8 @@ import {
   readTicketPublicationInputs,
   reconcileTicketPublication,
 } from "./ticket/publish.js";
+import { executionLimits, runBatch, type BatchRunMode } from "./batch/run.js";
+import { createHostBatchRuntime } from "./batch/host-runtime.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -619,6 +621,53 @@ async function main(): Promise<void> {
       version: VERSION,
     });
     process.exitCode = 0;
+    return;
+  }
+
+  if (command === "run-batch" || command === "resume") {
+    const batchId = optionValue("--batch-id");
+    const batchConfigPath = optionValue("--config");
+    const runId = optionValue("--run-id") ?? process.env.GITHUB_RUN_ID;
+    const startedAt =
+      optionValue("--started-at") ??
+      process.env.SANDCASTLE_RUN_STARTED_AT ??
+      new Date().toISOString();
+    const mode =
+      command === "resume" ? "resume" : optionValue("--mode");
+    const driverSource = optionValue("--ticket-driver-json");
+    if (!batchId || !batchConfigPath || !runId || !mode || !driverSource) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message:
+            "Batch processing requires --batch-id, --config, --run-id, --ticket-driver-json, and a run mode.",
+          path: "",
+        },
+      ]);
+    }
+    const config = await readProjectConfig(batchConfigPath);
+    const runtime = await createHostBatchRuntime(
+      process.cwd(),
+      {
+        configPath: batchConfigPath,
+        ticketDriver: parseSandboxCommand(driverSource),
+      },
+    );
+    const result = await runBatch(
+      process.cwd(),
+      {
+        batchId,
+        expectedHead: optionValue("--expected-head"),
+        limits: executionLimits(config),
+        mode: mode as BatchRunMode,
+        predecessorRunId: optionValue("--predecessor-run-id"),
+        runId,
+        startedAt,
+      },
+      runtime,
+    );
+    writeJson({ command, ok: result.status !== "failed", result, version: VERSION });
+    process.exitCode = result.status === "failed" ? 4 : 0;
     return;
   }
 

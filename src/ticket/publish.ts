@@ -53,7 +53,7 @@ interface PullRequestMarker {
   schemaVersion: 1;
 }
 
-interface PublicationRecord {
+export interface TicketPublicationRecord {
   batchId: string;
   commit: string;
   pullRequest: PublishedPullRequest;
@@ -465,11 +465,11 @@ function validPublishedPullRequest(
   );
 }
 
-function validPublicationRecord(candidate: unknown): candidate is PublicationRecord {
+function validPublicationRecord(candidate: unknown): candidate is TicketPublicationRecord {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
     return false;
   }
-  const record = candidate as Partial<PublicationRecord>;
+  const record = candidate as Partial<TicketPublicationRecord>;
   return (
     Object.keys(candidate).sort().join("\u0000") ===
       [
@@ -492,7 +492,7 @@ function validPublicationRecord(candidate: unknown): candidate is PublicationRec
   );
 }
 
-function publicationComment(record: PublicationRecord): string {
+function publicationComment(record: TicketPublicationRecord): string {
   return [
     `Published as ${record.commit} in draft PR #${record.pullRequest.number}.`,
     "",
@@ -502,7 +502,9 @@ function publicationComment(record: PublicationRecord): string {
   ].join("\n");
 }
 
-function parsePublicationRecord(body: string): PublicationRecord | null {
+export function parseTicketPublicationRecord(
+  body: string,
+): TicketPublicationRecord | null {
   const match = body.match(publicationRecordPattern);
   if (!match?.[1]) return null;
   let candidate: unknown;
@@ -965,8 +967,8 @@ async function listPublicationRecords(
   client: PublicationGitHubClient,
   repository: string,
   ticket: number,
-): Promise<PublicationRecord[]> {
-  const records: PublicationRecord[] = [];
+): Promise<TicketPublicationRecord[]> {
+  const records: TicketPublicationRecord[] = [];
   for (let page = 1; page <= 100; page += 1) {
     const response = await client.get<GitHubComment[]>(
       `/repos/${repository}/issues/${ticket}/comments?per_page=100&page=${page}`,
@@ -986,7 +988,7 @@ async function listPublicationRecords(
       );
     }
     for (const comment of response.data) {
-      const record = parsePublicationRecord(comment.body as string);
+      const record = parseTicketPublicationRecord(comment.body as string);
       if (record) records.push(record);
     }
     if (!hasNextPage(response.headers)) return records;
@@ -998,10 +1000,10 @@ async function listPublicationRecords(
 }
 
 function matchingPublicationRecord(
-  records: PublicationRecord[],
+  records: TicketPublicationRecord[],
   commit: string,
   options: PublishTicketOptions,
-): PublicationRecord | undefined {
+): TicketPublicationRecord | undefined {
   if (records.length > 1) {
     throw configurationError(
       "DUPLICATE_PUBLICATION_RECORDS",

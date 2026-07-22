@@ -107,6 +107,7 @@ export type {
   TicketReviewFinding,
 } from "./ticket/process.js";
 export {
+  parseTicketPublicationRecord,
   publishTicket,
   readTicketPublicationInputs,
   reconcileTicketPublication,
@@ -117,6 +118,7 @@ export type {
   PublishTicketOptions,
   ReconcileTicketPublicationOptions,
   TicketPublicationPendingResult,
+  TicketPublicationRecord,
   TicketPublicationResult,
   TicketPublicationRuntime,
   TicketReconciliationResult,
@@ -132,6 +134,26 @@ export type {
   BatchStartPreview,
   BatchStartResult,
 } from "./batch/start.js";
+export { executionLimits, runBatch } from "./batch/run.js";
+export {
+  dispatchBatchContinuation,
+  readBatchRunState,
+} from "./batch/github-run.js";
+export { createHostBatchRuntime } from "./batch/host-runtime.js";
+export type { HostBatchRuntimeOptions } from "./batch/host-runtime.js";
+export type {
+  BatchExecutionLimits,
+  BatchRunMode,
+  BatchRunResult,
+  BatchRunState,
+  BatchRunTicket,
+  BatchRunTicketStatus,
+  BatchTicketExecution,
+  BatchTicketExecutionInput,
+  ContinuationInput,
+  RunBatchOptions,
+  RunBatchRuntime,
+} from "./batch/run.js";
 export type {
   FrontierResult,
   FrontierTicket,
