@@ -10,6 +10,8 @@ import { checkProtectedPaths } from "../sandbox/policy.js";
 import type { TicketProcessingResult } from "./process.js";
 
 const markerPattern = /<!-- sandcastle-batch-state\n([\s\S]*?)\n-->/u;
+const publicationRecordPattern =
+  /<!-- sandcastle-ticket-publication\n([\s\S]*?)\n-->/u;
 
 interface GitHubResponse<T> {
   data: T | null;
@@ -33,11 +35,31 @@ interface GitHubPullRequest {
   title?: string;
 }
 
+interface GitHubCommit {
+  commit?: { message?: string };
+  parents?: Array<{ sha?: string }>;
+  sha?: string;
+}
+
+interface GitHubComment {
+  body?: string;
+  id?: number;
+}
+
 interface PullRequestMarker {
   batchId: string;
   parent: number;
   publishedTickets: number[];
   schemaVersion: 1;
+}
+
+interface PublicationRecord {
+  batchId: string;
+  commit: string;
+  pullRequest: PublishedPullRequest;
+  schemaVersion: 1;
+  sessionId: string;
+  ticket: number;
 }
 
 export interface PublishTicketOptions {
@@ -59,6 +81,35 @@ export interface TicketPublicationResult {
   sessionId: string;
   status: "published";
   ticket: number;
+}
+
+export type PublicationCheckpoint =
+  | "after-close"
+  | "after-push"
+  | "before-push";
+
+export interface TicketPublicationRuntime {
+  checkpoint?: (point: PublicationCheckpoint) => Promise<void> | void;
+}
+
+export interface ReconcileTicketPublicationOptions
+  extends PublishTicketOptions {
+  expectedHead?: string;
+}
+
+export interface TicketPublicationPendingResult {
+  batchId: string;
+  expectedHead: null;
+  remoteHead: string;
+  sessionId: string;
+  status: "publication-required";
+  ticket: number;
+}
+
+export interface TicketReconciliationResult
+  extends Omit<TicketPublicationResult, "status"> {
+  expectedHead: string;
+  status: "reconciled";
 }
 
 class PublicationGitHubClient {
@@ -396,6 +447,82 @@ function markerFor(marker: PullRequestMarker): string {
   return `<!-- sandcastle-batch-state\n${canonicalJson(marker).trimEnd()}\n-->`;
 }
 
+function validPublishedPullRequest(
+  candidate: unknown,
+): candidate is PublishedPullRequest {
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+  const pullRequest = candidate as Partial<PublishedPullRequest>;
+  return (
+    Object.keys(candidate).sort().join("\u0000") ===
+      ["draft", "number", "url"].sort().join("\u0000") &&
+    pullRequest.draft === true &&
+    Number.isSafeInteger(pullRequest.number) &&
+    (pullRequest.number ?? 0) > 0 &&
+    typeof pullRequest.url === "string" &&
+    pullRequest.url.length > 0
+  );
+}
+
+function validPublicationRecord(candidate: unknown): candidate is PublicationRecord {
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+  const record = candidate as Partial<PublicationRecord>;
+  return (
+    Object.keys(candidate).sort().join("\u0000") ===
+      [
+        "batchId",
+        "commit",
+        "pullRequest",
+        "schemaVersion",
+        "sessionId",
+        "ticket",
+      ]
+        .sort()
+        .join("\u0000") &&
+    record.schemaVersion === 1 &&
+    typeof record.batchId === "string" &&
+    validSha(record.commit) &&
+    validPublishedPullRequest(record.pullRequest) &&
+    validSessionId(record.sessionId) &&
+    Number.isSafeInteger(record.ticket) &&
+    (record.ticket ?? 0) > 0
+  );
+}
+
+function publicationComment(record: PublicationRecord): string {
+  return [
+    `Published as ${record.commit} in draft PR #${record.pullRequest.number}.`,
+    "",
+    "<!-- sandcastle-ticket-publication",
+    canonicalJson(record).trimEnd(),
+    "-->",
+  ].join("\n");
+}
+
+function parsePublicationRecord(body: string): PublicationRecord | null {
+  const match = body.match(publicationRecordPattern);
+  if (!match?.[1]) return null;
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(match[1]) as unknown;
+  } catch {
+    throw configurationError(
+      "TICKET_PUBLICATION_RECORD_INVALID",
+      "A Ticket publication record contains invalid managed JSON.",
+    );
+  }
+  if (!validPublicationRecord(candidate)) {
+    throw configurationError(
+      "TICKET_PUBLICATION_RECORD_INVALID",
+      "A Ticket publication record has an unsupported shape.",
+    );
+  }
+  return candidate;
+}
+
 function updatePullRequestBody(
   current: string,
   batch: BatchMetadata,
@@ -556,6 +683,7 @@ export async function publishTicket(
   repositoryPath: string,
   options: PublishTicketOptions,
   environment: NodeJS.ProcessEnv = process.env,
+  runtime: TicketPublicationRuntime = {},
 ): Promise<TicketPublicationResult> {
   validateInputs(options);
   const root = await resolveRepositoryRoot(repositoryPath);
@@ -651,6 +779,8 @@ export async function publishTicket(
     );
   }
 
+  await runtime.checkpoint?.("before-push");
+
   const push = await git(
     root,
     [
@@ -673,6 +803,7 @@ export async function publishTicket(
       "The atomic Batch publication push was rejected.",
     );
   }
+  await runtime.checkpoint?.("after-push");
   const remote = await client.get<{ object?: { sha?: string } }>(
     `/repos/${repository}/git/ref/heads/${encodeURIComponent(options.batch.branch)}`,
   );
@@ -699,12 +830,20 @@ export async function publishTicket(
   await client.post(
     `/repos/${repository}/issues/${options.processing.ticket}/comments`,
     {
-      body: `Published as ${publishedCommit} in draft PR #${pullRequest.number}.\n\n<!-- sandcastle-ticket-publication batch=${options.batch.id} session=${options.processing.sessionId} -->`,
+      body: publicationComment({
+        batchId: options.batch.id,
+        commit: publishedCommit,
+        pullRequest,
+        schemaVersion: 1,
+        sessionId: options.processing.sessionId,
+        ticket: options.processing.ticket,
+      }),
     },
   );
   await client.patch(`/repos/${repository}/issues/${options.processing.ticket}`, {
     state: "closed",
   });
+  await runtime.checkpoint?.("after-close");
   return {
     batchId: options.batch.id,
     commit: publishedCommit,
@@ -712,6 +851,317 @@ export async function publishTicket(
     remoteHead,
     sessionId: options.processing.sessionId,
     status: "published",
+    ticket: options.processing.ticket,
+  };
+}
+
+function validGitHubCommit(candidate: unknown): candidate is Required<GitHubCommit> {
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+  const commit = candidate as GitHubCommit;
+  return (
+    validSha(commit.sha) &&
+    commit.commit !== undefined &&
+    typeof commit.commit.message === "string" &&
+    Array.isArray(commit.parents) &&
+    commit.parents.every(({ sha }) => validSha(sha))
+  );
+}
+
+async function readReachableCommits(
+  client: PublicationGitHubClient,
+  repository: string,
+  branch: string,
+  beforeHead: string,
+): Promise<Array<Required<GitHubCommit>>> {
+  const commits: Array<Required<GitHubCommit>> = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await client.get<GitHubCommit[]>(
+      `/repos/${repository}/commits?sha=${encodeURIComponent(branch)}&per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(response.data) || !response.data.every(validGitHubCommit)) {
+      throw infrastructureError(
+        "GITHUB_API_INVALID_RESPONSE",
+        "GitHub returned invalid remote commit history.",
+      );
+    }
+    for (const commit of response.data) {
+      commits.push(commit as Required<GitHubCommit>);
+      if (commit.sha === beforeHead) return commits;
+    }
+    if (!hasNextPage(response.headers)) break;
+  }
+  throw configurationError(
+    "REMOTE_HISTORY_UNEXPECTED",
+    "The remote Batch history does not reach the pre-processing HEAD.",
+  );
+}
+
+function trailerValues(message: string, name: string): string[] {
+  const prefix = `${name}: `;
+  return message
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length));
+}
+
+function validatePublishedCommit(
+  commits: Array<Required<GitHubCommit>>,
+  remoteHead: string,
+  options: PublishTicketOptions,
+): string | null {
+  const ticketValue = String(options.processing.ticket);
+  const candidates = commits.filter(({ commit }) =>
+    trailerValues(commit.message as string, "Sandcastle-Ticket").includes(
+      ticketValue,
+    ),
+  );
+  if (candidates.length > 1) {
+    throw configurationError(
+      "DUPLICATE_PUBLISHED_COMMITS",
+      "Remote history contains duplicate completion commits for one Ticket.",
+    );
+  }
+  if (candidates.length === 0) {
+    if (remoteHead === options.processing.beforeHead) return null;
+    throw configurationError(
+      "REMOTE_HEAD_UNEXPECTED",
+      "Remote Batch HEAD is not a valid Published Commit for this Ticket.",
+    );
+  }
+  const candidate = candidates[0]!;
+  const message = candidate.commit.message as string;
+  const batch = trailerValues(message, "Sandcastle-Batch");
+  const ticket = trailerValues(message, "Sandcastle-Ticket");
+  const session = trailerValues(message, "Sandcastle-Session");
+  if (
+    candidate.sha !== remoteHead ||
+    candidate.parents.length !== 1 ||
+    candidate.parents[0]?.sha !== options.processing.beforeHead
+  ) {
+    throw configurationError(
+      "REMOTE_HEAD_UNEXPECTED",
+      "The valid Ticket completion commit is not the expected remote Batch HEAD.",
+    );
+  }
+  if (
+    batch.length !== 1 ||
+    batch[0] !== options.batch.id ||
+    ticket.length !== 1 ||
+    ticket[0] !== ticketValue ||
+    session.length !== 1 ||
+    session[0] !== options.processing.sessionId
+  ) {
+    throw configurationError(
+      "PUBLISHED_COMMIT_METADATA_MISMATCH",
+      "Published Commit trailers do not match the active Batch, Ticket, and Session.",
+    );
+  }
+  return candidate.sha as string;
+}
+
+async function listPublicationRecords(
+  client: PublicationGitHubClient,
+  repository: string,
+  ticket: number,
+): Promise<PublicationRecord[]> {
+  const records: PublicationRecord[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await client.get<GitHubComment[]>(
+      `/repos/${repository}/issues/${ticket}/comments?per_page=100&page=${page}`,
+    );
+    if (
+      !Array.isArray(response.data) ||
+      !response.data.every(
+        (comment) =>
+          Number.isSafeInteger(comment.id) &&
+          (comment.id ?? 0) > 0 &&
+          typeof comment.body === "string",
+      )
+    ) {
+      throw infrastructureError(
+        "GITHUB_API_INVALID_RESPONSE",
+        "GitHub returned invalid Ticket comments during reconciliation.",
+      );
+    }
+    for (const comment of response.data) {
+      const record = parsePublicationRecord(comment.body as string);
+      if (record) records.push(record);
+    }
+    if (!hasNextPage(response.headers)) return records;
+  }
+  throw infrastructureError(
+    "GITHUB_API_INVALID_RESPONSE",
+    "GitHub Ticket comment pagination exceeded the supported bound.",
+  );
+}
+
+function matchingPublicationRecord(
+  records: PublicationRecord[],
+  commit: string,
+  options: PublishTicketOptions,
+): PublicationRecord | undefined {
+  if (records.length > 1) {
+    throw configurationError(
+      "DUPLICATE_PUBLICATION_RECORDS",
+      "Ticket comments contain duplicate managed publication records.",
+    );
+  }
+  const record = records[0];
+  if (!record) return undefined;
+  if (
+    record.batchId !== options.batch.id ||
+    record.commit !== commit ||
+    record.sessionId !== options.processing.sessionId ||
+    record.ticket !== options.processing.ticket
+  ) {
+    throw configurationError(
+      "TICKET_PUBLICATION_RECORD_MISMATCH",
+      "The managed Ticket publication record does not match remote Git history.",
+    );
+  }
+  return record;
+}
+
+export async function reconcileTicketPublication(
+  repositoryPath: string,
+  options: ReconcileTicketPublicationOptions,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<TicketPublicationPendingResult | TicketReconciliationResult> {
+  validateInputs(options);
+  if (options.expectedHead !== undefined && !validSha(options.expectedHead)) {
+    throw configurationError(
+      "EXPECTED_HEAD_INVALID",
+      "Ticket reconciliation expected HEAD must be a complete commit SHA.",
+    );
+  }
+  const root = await resolveRepositoryRoot(repositoryPath);
+  const repository =
+    repositoryName(environment) ?? (await resolveGitHubRepository(root));
+  const client = clientFor(environment);
+  const [remoteResponse, repositoryMetadata, issueResponse] = await Promise.all([
+    client.get<{ object?: { sha?: string } }>(
+      `/repos/${repository}/git/ref/heads/${encodeURIComponent(options.batch.branch)}`,
+    ),
+    client.get<{ default_branch?: string }>(`/repos/${repository}`),
+    client.get<GitHubIssue>(
+      `/repos/${repository}/issues/${options.processing.ticket}`,
+    ),
+  ]);
+  const remoteHead = remoteResponse.data?.object?.sha;
+  if (!validSha(remoteHead)) {
+    throw infrastructureError(
+      "GITHUB_API_INVALID_RESPONSE",
+      "GitHub omitted a valid remote Batch HEAD.",
+    );
+  }
+  if (options.expectedHead && options.expectedHead !== remoteHead) {
+    throw configurationError(
+      "PUBLISHED_HEAD_MISMATCH",
+      "Remote Batch HEAD no longer matches the expected reconciliation point.",
+    );
+  }
+  const issue = issueResponse.data;
+  const defaultBranch = repositoryMetadata.data?.default_branch;
+  if (
+    !issue ||
+    issue.number !== options.processing.ticket ||
+    (issue.state !== "open" && issue.state !== "closed") ||
+    typeof defaultBranch !== "string" ||
+    defaultBranch.length === 0
+  ) {
+    throw configurationError(
+      "TICKET_RECONCILIATION_TARGET_INVALID",
+      "Ticket reconciliation requires a matching Ticket and default branch.",
+    );
+  }
+  const commits = await readReachableCommits(
+    client,
+    repository,
+    options.batch.branch,
+    options.processing.beforeHead,
+  );
+  const publishedCommit = validatePublishedCommit(commits, remoteHead, options);
+  if (!publishedCommit) {
+    if (issue.state === "closed") {
+      throw configurationError(
+        "TICKET_CLOSED_WITHOUT_RECORD",
+        "The Ticket is closed without a reachable valid Published Commit.",
+      );
+    }
+    return {
+      batchId: options.batch.id,
+      expectedHead: null,
+      remoteHead,
+      sessionId: options.processing.sessionId,
+      status: "publication-required",
+      ticket: options.processing.ticket,
+    };
+  }
+
+  const records = await listPublicationRecords(
+    client,
+    repository,
+    options.processing.ticket,
+  );
+  let record = matchingPublicationRecord(records, publishedCommit, options);
+  if (issue.state === "closed") {
+    if (!record) {
+      throw configurationError(
+        "TICKET_CLOSED_WITHOUT_RECORD",
+        "The Ticket is closed without a valid managed publication record.",
+      );
+    }
+    return {
+      batchId: options.batch.id,
+      commit: publishedCommit,
+      expectedHead: publishedCommit,
+      pullRequest: record.pullRequest,
+      remoteHead,
+      sessionId: options.processing.sessionId,
+      status: "reconciled",
+      ticket: options.processing.ticket,
+    };
+  }
+
+  const pullRequest = await ensureDraftPullRequest(
+    client,
+    repository,
+    defaultBranch,
+    options,
+  );
+  if (record && canonicalJson(record.pullRequest) !== canonicalJson(pullRequest)) {
+    throw configurationError(
+      "TICKET_PUBLICATION_RECORD_MISMATCH",
+      "The managed publication record identifies a different Batch pull request.",
+    );
+  }
+  if (!record) {
+    record = {
+      batchId: options.batch.id,
+      commit: publishedCommit,
+      pullRequest,
+      schemaVersion: 1,
+      sessionId: options.processing.sessionId,
+      ticket: options.processing.ticket,
+    };
+    await client.post(
+      `/repos/${repository}/issues/${options.processing.ticket}/comments`,
+      { body: publicationComment(record) },
+    );
+  }
+  await client.patch(`/repos/${repository}/issues/${options.processing.ticket}`, {
+    state: "closed",
+  });
+  return {
+    batchId: options.batch.id,
+    commit: publishedCommit,
+    expectedHead: publishedCommit,
+    pullRequest: record.pullRequest,
+    remoteHead,
+    sessionId: options.processing.sessionId,
+    status: "reconciled",
     ticket: options.processing.ticket,
   };
 }

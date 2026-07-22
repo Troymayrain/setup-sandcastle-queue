@@ -63,6 +63,7 @@ import { processTicket } from "./ticket/process.js";
 import {
   publishTicket,
   readTicketPublicationInputs,
+  reconcileTicketPublication,
 } from "./ticket/publish.js";
 
 const arguments_ = process.argv.slice(2);
@@ -244,6 +245,28 @@ async function main(): Promise<void> {
     }
     const inputs = await readTicketPublicationInputs(batchPath, resultPath);
     const result = await publishTicket(process.cwd(), inputs);
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "reconcile-ticket") {
+    const batchPath = optionValue("--batch");
+    const resultPath = optionValue("--result");
+    if (!batchPath || !resultPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "reconcile-ticket requires --batch <path> and --result <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const inputs = await readTicketPublicationInputs(batchPath, resultPath);
+    const result = await reconcileTicketPublication(process.cwd(), {
+      ...inputs,
+      expectedHead: optionValue("--expected-head"),
+    });
     writeJson({ command, ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;

@@ -106,11 +106,20 @@ export type {
   TicketProcessingResult,
   TicketReviewFinding,
 } from "./ticket/process.js";
-export { publishTicket, readTicketPublicationInputs } from "./ticket/publish.js";
+export {
+  publishTicket,
+  readTicketPublicationInputs,
+  reconcileTicketPublication,
+} from "./ticket/publish.js";
 export type {
+  PublicationCheckpoint,
   PublishedPullRequest,
   PublishTicketOptions,
+  ReconcileTicketPublicationOptions,
+  TicketPublicationPendingResult,
   TicketPublicationResult,
+  TicketPublicationRuntime,
+  TicketReconciliationResult,
 } from "./ticket/publish.js";
 export type {
   BrokerAuditEvent,
