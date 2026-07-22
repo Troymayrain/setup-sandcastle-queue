@@ -6,6 +6,11 @@ export {
   resolveModelRoles,
   validateProjectConfig,
 } from "./config.js";
+export {
+  runPinnedAgentDriver,
+  runPinnedFinalFixDriver,
+  runPinnedFinalReviewDriver,
+} from "./agent/driver.js";
 export type {
   CommandSpec,
   ConfigurationDiagnostic,
@@ -115,18 +120,25 @@ export {
   assertSandboxCliOptions,
   checkProtectedPaths,
   createSandboxPlan,
+  executeObservedSandboxPlan,
   executeSandboxPlan,
   isProtectedControlPlanePath,
   parseSandboxCommand,
 } from "./sandbox/policy.js";
 export type {
   ProtectedPathResult,
+  ObservedSandboxExecution,
+  SandboxAgentObservation,
   SandboxExecutionResult,
   SandboxMount,
   SandboxPlan,
+  SandboxSkillReceipt,
   SandboxStage,
 } from "./sandbox/policy.js";
-export { runEgressProxyProcess } from "./sandbox/egress-proxy.js";
+export {
+  isPublicNetworkAddress,
+  runEgressProxyProcess,
+} from "./sandbox/egress-proxy.js";
 export { processTicket } from "./ticket/process.js";
 export type {
   ProcessTicketOptions,
@@ -200,6 +212,13 @@ export type {
   AbortCheckpoint,
   BatchAbortRecord,
 } from "./batch/abort.js";
+export { finalizeBatch } from "./batch/finalize.js";
+export type {
+  FinalizeBatchOptions,
+  FinalizeBatchResult,
+  FinalizeBatchRuntime,
+  FinalizeBatchState,
+} from "./batch/finalize.js";
 export {
   createRemoteDoctorBinding,
   remoteDoctorArtifactName,
@@ -225,8 +244,19 @@ export type {
 export {
   executeWorkflowCapability,
   isWorkflowSecurityContractSatisfied,
+  readWorkflowJobPermissions,
   WORKFLOW_OPERATION_CONTRACTS,
 } from "./workflow/security.js";
+export {
+  runWorkflowHostCommand,
+  runWorkflowTicketDriver,
+} from "./workflow/host.js";
+export type {
+  WorkflowHostCommandResult,
+  WorkflowHostInvocation,
+  WorkflowHostRuntime,
+  WorkflowTicketExecution,
+} from "./workflow/host.js";
 export type {
   WorkflowCapability,
   WorkflowCapabilityRequest,
@@ -253,6 +283,8 @@ export type {
   RunAuditArtifact,
   RunAuditInput,
   RunAuditOutcome,
+  RunAuditReviewEvidence,
+  RunAuditReviewExecution,
   RunAuditRuntime,
   RunAuditSkillReceipt,
   RunAuditTicketEvidence,
@@ -393,6 +425,7 @@ export type {
   CredentiallessFixtureDiagnostic,
   CredentiallessFixtureEvidence,
   CredentiallessFixtureId,
+  CredentiallessFixtureInstallationEvidence,
   CredentiallessFixtureMatrixInput,
   CredentiallessFixtureMatrixResult,
   FixtureLifecycleStep,

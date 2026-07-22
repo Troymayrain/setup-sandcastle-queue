@@ -7,10 +7,15 @@ import {
   type ProjectConfig,
 } from "../config.js";
 import { resolveGitHubRepository } from "../github/configure.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
 import { sha256 } from "../hash.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { isRecord } from "../json.js";
 import {
   createInstallPlan,
-  resolveRepositoryRoot,
   type AdoptionPlanMetadata,
   type AdoptionSkillExtension,
   type InstallPlan,
@@ -55,6 +60,11 @@ interface GitHubPullRequest {
   title?: string;
 }
 
+interface LegacyGitHubResponse<T> {
+  data: T;
+  headers: Headers;
+}
+
 interface SkillFile {
   content: Buffer;
   path: string;
@@ -73,15 +83,11 @@ function invalidGitHubResponse(): InfrastructureError {
   ]);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 async function githubGet<T>(
   apiUrl: string,
   token: string,
   path: string,
-): Promise<T> {
+): Promise<LegacyGitHubResponse<T>> {
   let response: Response;
   try {
     response = await fetch(`${apiUrl.replace(/\/$/u, "")}${path}`, {
@@ -111,10 +117,68 @@ async function githubGet<T>(
     ]);
   }
   try {
-    return (await response.json()) as T;
+    return {
+      data: JSON.parse(await readBoundedGitHubResponseText(response)) as T,
+      headers: response.headers,
+    };
   } catch {
     throw invalidGitHubResponse();
   }
+}
+
+async function listWorkflowRuns(
+  apiUrl: string,
+  token: string,
+  workflowPath: string,
+  status: "in_progress" | "queued",
+): Promise<GitHubWorkflowRunsResponse> {
+  const runs: Array<{ id?: number }> = [];
+  let expectedTotal: number | undefined;
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await githubGet<GitHubWorkflowRunsResponse>(
+      apiUrl,
+      token,
+      `${workflowPath}?status=${status}&per_page=100&page=${page}`,
+    );
+    const candidate = response.data;
+    if (
+      typeof candidate.total_count !== "number" ||
+      !Number.isSafeInteger(candidate.total_count) ||
+      candidate.total_count < 0 ||
+      !Array.isArray(candidate.workflow_runs)
+    ) {
+      throw invalidGitHubResponse();
+    }
+    expectedTotal ??= candidate.total_count;
+    if (candidate.total_count !== expectedTotal) {
+      throw invalidGitHubResponse();
+    }
+    runs.push(...candidate.workflow_runs);
+    if (!hasNextGitHubPage(response.headers)) {
+      if (runs.length !== expectedTotal) throw invalidGitHubResponse();
+      return { total_count: expectedTotal, workflow_runs: runs };
+    }
+  }
+  throw invalidGitHubResponse();
+}
+
+async function listOpenPullRequests(
+  apiUrl: string,
+  token: string,
+  repository: string,
+): Promise<GitHubPullRequest[]> {
+  const pullRequests: GitHubPullRequest[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await githubGet<GitHubPullRequest[]>(
+      apiUrl,
+      token,
+      `/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(response.data)) throw invalidGitHubResponse();
+    pullRequests.push(...response.data);
+    if (!hasNextGitHubPage(response.headers)) return pullRequests;
+  }
+  throw invalidGitHubResponse();
 }
 
 function parsePullRequestOptOut(value?: string): number[] {
@@ -171,21 +235,19 @@ export async function inspectLegacyQuiescence(
   const apiUrl = environment.GITHUB_API_URL ?? "https://api.github.com";
   const workflowPath = `/repos/${repository}/actions/workflows/sandcastle.yml/runs`;
   const [queued, inProgress, pullRequests] = await Promise.all([
-    githubGet<GitHubWorkflowRunsResponse>(
+    listWorkflowRuns(
       apiUrl,
       token,
-      `${workflowPath}?status=queued&per_page=100&page=1`,
+      workflowPath,
+      "queued",
     ),
-    githubGet<GitHubWorkflowRunsResponse>(
+    listWorkflowRuns(
       apiUrl,
       token,
-      `${workflowPath}?status=in_progress&per_page=100&page=1`,
+      workflowPath,
+      "in_progress",
     ),
-    githubGet<GitHubPullRequest[]>(
-      apiUrl,
-      token,
-      `/repos/${repository}/pulls?state=open&per_page=100&page=1`,
-    ),
+    listOpenPullRequests(apiUrl, token, repository),
   ]);
   if (
     !Array.isArray(queued.workflow_runs) ||

@@ -13,8 +13,13 @@ import {
   previewGitHubConfiguration,
   resolveGitHubRepository,
 } from "./github/configure.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "./github/response.js";
 import { sha256 } from "./hash.js";
-import { resolveRepositoryRoot } from "./installer/plan.js";
+import { resolveRepositoryRoot } from "./git/repository.js";
+import { isRecord, readBoundedJsonFile } from "./json.js";
 import {
   RUNTIME_SKILLS_UPSTREAM_COMMIT,
   RUNTIME_SKILL_HASHES,
@@ -94,22 +99,14 @@ function diagnostic(
     : { check, code, message, path };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 async function readJson(path: string, code: string): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, 4 * 1024 * 1024);
+  if (!result.ok && result.reason !== "invalid-json") {
     throw new InfrastructureError([
       { code, message: "Unable to read an installed Sandcastle metadata file." },
     ]);
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code,
@@ -118,6 +115,7 @@ async function readJson(path: string, code: string): Promise<unknown> {
       },
     ]);
   }
+  return result.value;
 }
 
 function parseManifest(candidate: unknown): InstallationManifest {
@@ -453,12 +451,6 @@ interface GitHubArtifact {
   name?: string;
 }
 
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
-  );
-}
-
 async function listRemoteDoctorArtifacts(
   repository: string,
   environment: NodeJS.ProcessEnv,
@@ -494,7 +486,9 @@ async function listRemoteDoctorArtifacts(
     if (response.status !== 200) return null;
     let candidate: unknown;
     try {
-      candidate = (await response.json()) as unknown;
+      candidate = JSON.parse(
+        await readBoundedGitHubResponseText(response),
+      ) as unknown;
     } catch {
       return null;
     }
@@ -514,7 +508,7 @@ async function listRemoteDoctorArtifacts(
       return null;
     }
     artifacts.push(...(candidate as { artifacts: GitHubArtifact[] }).artifacts);
-    if (!hasNextPage(response.headers)) return artifacts;
+    if (!hasNextGitHubPage(response.headers)) return artifacts;
   }
   return null;
 }

@@ -10,6 +10,19 @@ const environment = {
   GITHUB_RUN_ID: "9500",
 };
 
+function installationEvidence(fixture) {
+  if (fixture === "existing-install") {
+    return { operation: "reinstall", startingState: "managed" };
+  }
+  if (fixture === "adopt") {
+    return { operation: "adopt", startingState: "unmanaged" };
+  }
+  if (fixture === "upgrade") {
+    return { operation: "upgrade", startingState: "managed" };
+  }
+  return { operation: "install", startingState: "fresh" };
+}
+
 test("credentialless gate requires every fixture lifecycle and API contract capability", async () => {
   const {
     ANTHROPIC_CONTRACT_CAPABILITIES,
@@ -28,6 +41,7 @@ test("credentialless gate requires every fixture lifecycle and API contract capa
     evidence: CREDENTIALLESS_FIXTURE_IDS.map((fixture) => ({
       candidateSha,
       fixture,
+      installation: installationEvidence(fixture),
       observations: {
         audit: true,
         repository: true,
@@ -65,6 +79,7 @@ test("credentialless gate rejects missing steps, unknown evidence, and exposed s
   const evidence = CREDENTIALLESS_FIXTURE_IDS.map((fixture) => ({
     candidateSha,
     fixture,
+    installation: installationEvidence(fixture),
     observations: {
       audit: true,
       repository: true,
@@ -80,6 +95,10 @@ test("credentialless gate rejects missing steps, unknown evidence, and exposed s
     upstreamError: secret,
   };
   evidence[1].steps = evidence[1].steps.slice(1);
+  evidence.at(-1).installation = {
+    operation: "install",
+    startingState: "fresh",
+  };
   const input = {
     candidateSha,
     contracts: {
@@ -127,6 +146,18 @@ test("ordinary PR CI exposes no live or release secret and executes the full fix
     new URL("../.github/workflows/ci.yml", import.meta.url),
     "utf8",
   );
+  const lifecycle = readFileSync(
+    new URL("../scripts/credentialless-fixture-lib.mjs", import.meta.url),
+    "utf8",
+  );
+  const dockerfile = readFileSync(
+    new URL("fixtures/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  const contractRunner = readFileSync(
+    new URL("../scripts/run-contract-ci.mjs", import.meta.url),
+    "utf8",
+  );
   const trigger = workflow.match(/\non:\n([\s\S]*?)\npermissions:/u)?.[1] ?? "";
 
   assert.match(trigger, /^  pull_request:/mu);
@@ -140,7 +171,24 @@ test("ordinary PR CI exposes no live or release secret and executes the full fix
   for (const fixture of CREDENTIALLESS_FIXTURE_IDS) {
     assert.equal(workflow.includes(`- ${fixture}`), true, fixture);
   }
-  assert.match(workflow, /docker build/u);
   assert.match(workflow, /run-credentialless-fixture/u);
+  assert.doesNotMatch(workflow, /SANDCASTLE_FIXTURE_CONTAINER_BUILT/u);
+  assert.match(lifecycle, /"docker",\s*"build"/u);
+  assert.match(lifecycle, /"docker",\s*"run"/u);
+  assert.doesNotMatch(dockerfile, /\/bin\/true/u);
+  assert.match(dockerfile, /dist\/cli\.js/u);
+  assert.match(lifecycle, /dst=\/workspace,readonly/u);
+  assert.match(lifecycle, /"doctor",\s*"--config"/u);
+  assert.match(workflow, /python-version: 3\.12\.8/u);
+  assert.match(workflow, /go-version: 1\.23\.4/u);
+  assert.match(workflow, /java-version: 21\.0\.6/u);
   assert.match(workflow, /verify-fixture-matrix/u);
+  for (const suite of [
+    "test/api-contract-ci.test.mjs",
+    "test/credential-broker.test.mjs",
+    "test/frontier.test.mjs",
+    "test/ticket-publish.test.mjs",
+  ]) {
+    assert.equal(contractRunner.includes(suite), true, suite);
+  }
 });

@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { canonicalJson } from "../canonical-json.js";
 import { ConfigurationError, InfrastructureError } from "../config.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { hasExactShape, isRecord } from "../json.js";
 import type { TicketPublicationRecord } from "../ticket/publish.js";
 
 const batchIdPattern = /^p([1-9][0-9]*)-[a-f0-9]{12}-r[1-9][0-9]*$/u;
-const gitShaPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const sessionIdPattern = uuidPattern;
@@ -87,6 +88,7 @@ export interface AbortBatchRuntime {
     repositoryPath: string,
     batchId: string,
   ) => Promise<AbortBatchState>;
+  releaseActiveBatch: (expectedHead: string) => Promise<void> | void;
   reopenTicket: (number: number) => Promise<void> | void;
 }
 
@@ -105,18 +107,6 @@ function configurationError(code: string, message: string): ConfigurationError {
 
 function infrastructureError(code: string, message: string): InfrastructureError {
   return new InfrastructureError([{ code, message }]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function validActor(value: unknown): value is string {
@@ -152,7 +142,7 @@ function validPublication(
     typeof value.batchId !== "string" ||
     !batchIdPattern.test(value.batchId) ||
     typeof value.commit !== "string" ||
-    !gitShaPattern.test(value.commit) ||
+    !isGitObjectId(value.commit) ||
     value.schemaVersion !== 1 ||
     typeof value.sessionId !== "string" ||
     !sessionIdPattern.test(value.sessionId) ||
@@ -192,11 +182,11 @@ function validAbortRecord(value: unknown): value is BatchAbortRecord {
     batchIdPattern.test(value.batchId) &&
     value.branch === `sandcastle/${value.batchId}` &&
     typeof value.defaultBranchHead === "string" &&
-    gitShaPattern.test(value.defaultBranchHead) &&
+    isGitObjectId(value.defaultBranchHead) &&
     typeof value.eventId === "string" &&
     uuidPattern.test(value.eventId) &&
     typeof value.expectedHead === "string" &&
-    gitShaPattern.test(value.expectedHead) &&
+    isGitObjectId(value.expectedHead) &&
     Number.isSafeInteger(value.parent) &&
     (value.parent as number) > 0 &&
     value.preservedBranch === true &&
@@ -229,7 +219,7 @@ function validateOptions(options: AbortBatchOptions): RegExpMatchArray {
     ]) ||
     !match ||
     !validActor(options.actor) ||
-    !gitShaPattern.test(options.expectedHead) ||
+    !isGitObjectId(options.expectedHead) ||
     !Number.isSafeInteger(options.pullRequest) ||
     options.pullRequest <= 0 ||
     !validReason(options.reason) ||
@@ -275,7 +265,7 @@ function validateState(
     state.batch.parent !== Number(identity[1]) ||
     state.batch.remoteHead !== options.expectedHead ||
     typeof state.defaultBranchHead !== "string" ||
-    !gitShaPattern.test(state.defaultBranchHead) ||
+    !isGitObjectId(state.defaultBranchHead) ||
     !hasExactShape(state.parent, ["number", "state"]) ||
     state.parent.number !== state.batch.parent ||
     state.parent.state !== "open" ||
@@ -435,6 +425,7 @@ export async function abortBatch(
     );
   }
   if (records.completed) {
+    await runtime.releaseActiveBatch(options.expectedHead);
     return {
       auditEventId: records.completed.eventId,
       batchId: options.batchId,
@@ -493,6 +484,7 @@ export async function abortBatch(
   }
   const completed = { ...started, stage: "completed" as const };
   await runtime.appendAudit(completed);
+  await runtime.releaseActiveBatch(options.expectedHead);
   return {
     auditEventId: completed.eventId,
     batchId: options.batchId,

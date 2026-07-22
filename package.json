@@ -21,7 +21,9 @@
     "THIRD_PARTY_NOTICES.md",
     "agents",
     "assets",
-    "control-plane",
+    "control-plane/package-lock.json",
+    "control-plane/package.json",
+    "control-plane/runtime-package.json",
     "dist",
     "release-manifest.json",
     "schema",
@@ -40,6 +42,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@actions/artifact": "6.2.1",
     "ajv": "8.20.0",
     "libsodium-wrappers": "0.8.4"
   },

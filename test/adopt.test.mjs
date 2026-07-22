@@ -133,8 +133,10 @@ async function startGitHubServer({
   inProgress = [],
   invalidWorkflowResponse = false,
   pullRequests = [],
+  pullRequestPages,
   queued = [],
 } = {}) {
+  const openPullRequestPages = pullRequestPages ?? [pullRequests];
   const requests = [];
   const server = createServer((request, response) => {
     requests.push({ method: request.method, url: request.url });
@@ -165,8 +167,18 @@ async function startGitHubServer({
       );
       return;
     }
-    if (request.url === "/repos/acme/widget/pulls?state=open&per_page=100&page=1") {
-      response.end(JSON.stringify(pullRequests));
+    const pullRequestPage = request.url?.match(
+      /^\/repos\/acme\/widget\/pulls\?state=open&per_page=100&page=([1-9][0-9]*)$/u,
+    )?.[1];
+    if (pullRequestPage) {
+      const page = Number(pullRequestPage);
+      if (page < openPullRequestPages.length) {
+        response.setHeader(
+          "link",
+          `</repos/acme/widget/pulls?state=open&per_page=100&page=${page + 1}>; rel="next"`,
+        );
+      }
+      response.end(JSON.stringify(openPullRequestPages[page - 1] ?? []));
       return;
     }
     if (request.url === "/repos/acme/widget") {
@@ -439,6 +451,54 @@ test("adopt requires explicit opt-out for an unfinished legacy integration PR", 
       [17],
     );
     assert.equal(github.requests.every(({ method }) => method === "GET"), true);
+  } finally {
+    await github.close();
+  }
+});
+
+test("adopt rejects an unfinished legacy integration PR on a later page", async () => {
+  const repository = createLegacyRepository();
+  const ordinaryPullRequests = Array.from({ length: 100 }, (_, index) => ({
+    body: "ordinary change",
+    head: { ref: `feature-${index + 1}` },
+    number: index + 1,
+    title: `Feature ${index + 1}`,
+  }));
+  const github = await startGitHubServer({
+    pullRequestPages: [
+      ordinaryPullRequests,
+      [
+        {
+          body: "<!-- sandcastle:legacy -->",
+          head: { ref: "sandcastle/legacy-page-two" },
+          number: 101,
+          title: "Legacy Sandcastle integration",
+        },
+      ],
+    ],
+  });
+  try {
+    const result = await runCli(
+      ["adopt", "--config", writeConfig()],
+      repository,
+      {
+        ...process.env,
+        GITHUB_API_URL: github.apiUrl,
+        GITHUB_TOKEN: "github-token-must-not-leak",
+      },
+    );
+
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(
+      JSON.parse(result.stdout).diagnostics[0].code,
+      "LEGACY_INTEGRATION_PR_OPEN",
+    );
+    assert.equal(
+      github.requests.some(({ url }) =>
+        url?.endsWith("/pulls?state=open&per_page=100&page=2"),
+      ),
+      true,
+    );
   } finally {
     await github.close();
   }

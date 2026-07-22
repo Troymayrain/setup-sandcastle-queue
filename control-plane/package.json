@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "@actions/artifact": "6.2.1",
     "@anthropic-ai/claude-code": "2.1.217",
     "ajv": "8.20.0",
     "libsodium-wrappers": "0.8.4"

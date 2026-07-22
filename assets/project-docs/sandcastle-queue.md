@@ -4,7 +4,7 @@
 
 ## 当前运行边界
 
-Queue 配置位于 `.sandcastle/config.json`。runtime engineering skills 位于 `.agents/skills/`，来源与 hash 记录在 `skills-lock.json`。当前 managed workflow 引用的 `sandcastle-queue workflow-host` 尚未实现，真实 Actions Batch 会 fail closed。不要手工替换 dispatcher，也不要声称 remote-doctor、live E2E 或 release gate 已通过。
+Queue 配置位于 `.sandcastle/config.json`。runtime engineering skills 位于 `.agents/skills/`，来源与 hash 记录在 `skills-lock.json`。managed workflow 通过 `sandcastle-queue workflow-host` 路由所有 host operation。不要手工替换 dispatcher，也不要把本地合同测试写成 remote-doctor、live E2E 或 release gate 已通过。
 
 本地改动后运行：
 
@@ -21,7 +21,7 @@ sandcastle-queue doctor --offline
 - `Continuation Run` 沿用 Batch，重新读取 GitHub state，并校验 expected HEAD 与 resolved environment hash。
 - `Published Commit` 由 host 创建和 atomic push；sandbox commits 不是发布事实。
 - `Final Review` 同时检查 Standards 与 Spec，两轴都无 actionable finding 才能把 PR 标记 ready。
-- zero diff 进入 `waiting-no-change`，需要人工 accept；abort 默认保留 branch 和 audit evidence。
+- zero diff 进入 `waiting-no-change`，需要人工 accept；abort 默认保留 branch 和 audit evidence。`complete-no-change`、completed abort 或 merged PR 的人工 `finalize-batch` 会按 expected HEAD 释放 active Batch。
 
 ## 安全边界
 

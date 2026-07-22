@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { basename } from "node:path";
 
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
+import { readBoundedJsonFile } from "./json.js";
 
 export interface ConfigurationDiagnostic {
   code: string;
@@ -385,10 +386,8 @@ export function isExactNetworkHost(host: string): boolean {
 }
 
 export async function readProjectConfig(path: string): Promise<ProjectConfig> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch (cause) {
+  const result = await readBoundedJsonFile(path, 1024 * 1024);
+  if (!result.ok && result.reason !== "invalid-json") {
     throw new InfrastructureError([
       {
         code: "CONFIG_READ_FAILED",
@@ -396,10 +395,7 @@ export async function readProjectConfig(path: string): Promise<ProjectConfig> {
       },
     ]);
   }
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(source);
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code: "INVALID_JSON",
@@ -409,7 +405,7 @@ export async function readProjectConfig(path: string): Promise<ProjectConfig> {
     ]);
   }
 
-  return validateProjectConfig(candidate);
+  return validateProjectConfig(result.value);
 }
 
 export function validateProjectConfig(candidate: unknown): ProjectConfig {

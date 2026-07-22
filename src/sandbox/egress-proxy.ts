@@ -1,8 +1,75 @@
+import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connect } from "node:net";
+import { BlockList, connect, isIP } from "node:net";
 
 import { ConfigurationError, isExactNetworkHost } from "../config.js";
+
+const blockedAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.31.196.0", 24],
+  ["192.52.193.0", 24],
+  ["192.88.99.0", 24],
+  ["192.175.48.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+] as const) {
+  blockedAddresses.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [
+  ["::", 128],
+  ["::1", 128],
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001::", 23],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["3fff::", 20],
+  ["fc00::", 7],
+  ["fec0::", 10],
+  ["fe80::", 10],
+  ["ff00::", 8],
+] as const) {
+  blockedAddresses.addSubnet(network, prefix, "ipv6");
+}
+
+export function isPublicNetworkAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 6 && /^::ffff:/iu.test(address)) return false;
+  return (
+    (family === 4 && !blockedAddresses.check(address, "ipv4")) ||
+    (family === 6 && !blockedAddresses.check(address, "ipv6"))
+  );
+}
+
+async function resolvePublicAddress(
+  hostname: string,
+): Promise<{ address: string; family: 4 | 6 }> {
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (
+    addresses.length === 0 ||
+    addresses.some(({ address }) => !isPublicNetworkAddress(address))
+  ) {
+    throw configurationError(
+      "SANDBOX_EGRESS_ADDRESS_FORBIDDEN",
+      "An allowed egress host resolved to a non-public network address.",
+    );
+  }
+  return addresses[0] as { address: string; family: 4 | 6 };
+}
 
 function configurationError(code: string, message: string): ConfigurationError {
   return new ConfigurationError([{ code, message, path: "" }]);
@@ -46,11 +113,11 @@ function safeHeaders(request: IncomingMessage): Record<string, string | string[]
   return headers;
 }
 
-function proxyHttpRequest(
+async function proxyHttpRequest(
   request: IncomingMessage,
   response: ServerResponse,
   allowlist: Set<string>,
-): void {
+): Promise<void> {
   let target: URL;
   try {
     target = new URL(request.url ?? "");
@@ -66,20 +133,27 @@ function proxyHttpRequest(
     deny(response);
     return;
   }
-  const upstream = httpRequest(
-    target,
-    {
-      headers: { ...safeHeaders(request), host: target.host },
-      method: request.method,
-    },
-    (upstreamResponse) => {
-      response.writeHead(
-        upstreamResponse.statusCode ?? 502,
-        upstreamResponse.headers,
-      );
-      upstreamResponse.pipe(response);
-    },
-  );
+  let resolved: { address: string; family: 4 | 6 };
+  try {
+    resolved = await resolvePublicAddress(target.hostname);
+  } catch {
+    deny(response);
+    return;
+  }
+  const upstream = httpRequest({
+    family: resolved.family,
+    headers: { ...safeHeaders(request), host: target.host },
+    host: resolved.address,
+    method: request.method,
+    path: `${target.pathname}${target.search}`,
+    port: 80,
+  }, (upstreamResponse) => {
+    response.writeHead(
+      upstreamResponse.statusCode ?? 502,
+      upstreamResponse.headers,
+    );
+    upstreamResponse.pipe(response);
+  });
   upstream.on("error", () => deny(response, 502));
   request.pipe(upstream);
 }
@@ -89,9 +163,9 @@ export async function runEgressProxyProcess(
 ): Promise<void> {
   const allowlist = readAllowlist(environment);
   const server = createServer((request, response) => {
-    proxyHttpRequest(request, response, allowlist);
+    void proxyHttpRequest(request, response, allowlist);
   });
-  server.on("connect", (request, clientSocket, head) => {
+  server.on("connect", async (request, clientSocket, head) => {
     const match = request.url?.match(/^([^:]+):(\d+)$/u);
     const hostname = match?.[1] ?? "";
     const port = Number(match?.[2] ?? 0);
@@ -101,7 +175,20 @@ export async function runEgressProxyProcess(
       );
       return;
     }
-    const upstream = connect(port, hostname, () => {
+    let resolved: { address: string; family: 4 | 6 };
+    try {
+      resolved = await resolvePublicAddress(hostname);
+    } catch {
+      clientSocket.end(
+        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+      );
+      return;
+    }
+    const upstream = connect({
+      family: resolved.family,
+      host: resolved.address,
+      port,
+    }, () => {
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) {
         upstream.write(head);

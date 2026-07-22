@@ -1,4 +1,5 @@
 import { ConfigurationError, type ProjectConfig } from "../config.js";
+import { isGitObjectId } from "../git/object-id.js";
 
 const batchIdPattern = /^p([1-9][0-9]*)-([a-f0-9]{12})-r([1-9][0-9]*)$/u;
 const completeStatuses = new Set<BatchRunTicketStatus>([
@@ -121,10 +122,6 @@ function configurationError(code: string, message: string): ConfigurationError {
   return new ConfigurationError([{ code, message, path: "" }]);
 }
 
-function validSha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
-}
-
 function validateLimits(limits: BatchExecutionLimits): void {
   const expected: BatchExecutionLimits = {
     jobTimeoutMinutes: 350,
@@ -162,7 +159,7 @@ function validateOptions(options: RunBatchOptions): RegExpMatchArray {
   }
   if (
     options.mode === "continuation" &&
-    (!validSha(options.expectedHead) ||
+    (!isGitObjectId(options.expectedHead) ||
       !options.predecessorRunId ||
       !/^[1-9][0-9]*$/u.test(options.predecessorRunId) ||
       options.predecessorRunId === options.runId)
@@ -199,9 +196,9 @@ function validateState(
     state.branch !== `sandcastle/${batchId}` ||
     state.parent !== parent ||
     state.initialRunId !== initialRunId ||
-    !validSha(state.originalBaseSha) ||
+    !isGitObjectId(state.originalBaseSha) ||
     !state.originalBaseSha.startsWith(basePrefix ?? "") ||
-    !validSha(state.remoteHead) ||
+    !isGitObjectId(state.remoteHead) ||
     state.activeHead !== state.remoteHead ||
     typeof state.defaultBranch !== "string" ||
     state.defaultBranch.length === 0 ||
@@ -375,7 +372,7 @@ export async function runBatch(
     if (
       result.ticket !== next.number ||
       result.beforeHead !== state.remoteHead ||
-      !validSha(result.head) ||
+      !isGitObjectId(result.head) ||
       (result.status !== "published" && result.status !== "waiting-no-change")
     ) {
       throw configurationError(

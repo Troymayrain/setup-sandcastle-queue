@@ -1,6 +1,9 @@
-import { readFile } from "node:fs/promises";
-
 import { ConfigurationError } from "../config.js";
+import {
+  hasExactShape,
+  isRecord,
+  readBoundedJsonFile,
+} from "../json.js";
 
 const sha1Pattern = /^[a-f0-9]{40}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -169,21 +172,6 @@ export interface BatchDogfoodGateResult {
   run: { id: string; url: string } | null;
   schemaVersion: 1;
   tickets: BatchDogfoodTicketEvidence[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function positiveInteger(value: unknown): value is number {
@@ -676,10 +664,8 @@ export function evaluateBatchDogfoodGate(
 }
 
 export async function readBatchDogfoodGateInput(path: string): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, maximumInputBytes);
+  if (!result.ok && result.reason === "unavailable") {
     throw new ConfigurationError([
       {
         code: "BATCH_DOGFOOD_INPUT_UNAVAILABLE",
@@ -688,7 +674,7 @@ export async function readBatchDogfoodGateInput(path: string): Promise<unknown> 
       },
     ]);
   }
-  if (Buffer.byteLength(source, "utf8") > maximumInputBytes) {
+  if (!result.ok && result.reason === "too-large") {
     throw new ConfigurationError([
       {
         code: "BATCH_DOGFOOD_INPUT_TOO_LARGE",
@@ -697,9 +683,7 @@ export async function readBatchDogfoodGateInput(path: string): Promise<unknown> 
       },
     ]);
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code: "BATCH_DOGFOOD_INPUT_INVALID_JSON",
@@ -708,4 +692,5 @@ export async function readBatchDogfoodGateInput(path: string): Promise<unknown> 
       },
     ]);
   }
+  return result.value;
 }

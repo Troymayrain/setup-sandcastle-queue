@@ -170,6 +170,13 @@ test("release gate workflow is manual-only and isolates live secrets from ordina
   assert.match(workflow, /environment: release-live-e2e/u);
   assert.match(workflow, /secrets\.LIVE_E2E_DISPATCH_TOKEN/u);
   assert.match(workflow, /persist-credentials: false/u);
+  assert.match(
+    workflow,
+    /target_ref="\$\(gh api "repos\/\$\{FIXTURE_REPOSITORY\}" --jq \.default_branch\)"/u,
+  );
+  assert.match(workflow, /\[\[ -z "\$target_ref" \]\]/u);
+  assert.match(workflow, /--ref "\$target_ref"/u);
+  assert.doesNotMatch(workflow, /--ref main/u);
   assert.match(workflow, /verify-live-e2e/u);
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}/u);
   assert.match(workflow, /sandcastle-live-e2e-\$\{\{ inputs\.candidate_sha \}\}/u);

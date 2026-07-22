@@ -139,7 +139,10 @@ function writeSeam() {
   return path;
 }
 
-function createTicketDocker(repository, { noChange = false } = {}) {
+function createTicketDocker(
+  repository,
+  { noChange = false, selfSignedOnly = false } = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), "sandcastle-ticket-docker-"));
   const logPath = join(directory, "calls.jsonl");
   const executable = join(directory, "docker");
@@ -176,7 +179,20 @@ const outputDirectory = mountSource("/sandcastle/output");
 const inputDirectory = mountSource("/sandcastle/input");
 const outputPath = outputArgument.replace("/sandcastle/output", outputDirectory);
 const contract = JSON.parse(readFileSync(inputDirectory + "/contract.json", "utf8"));
+function observe(id, name, input = {}) {
+  if (${JSON.stringify(selfSignedOnly)}) return;
+  process.stdout.write(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id, name, input }] },
+  }) + "\\n");
+  process.stdout.write(JSON.stringify({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok", is_error: false }] },
+  }) + "\\n");
+}
 if (phase === "implementation") {
+  observe("implement-" + contract.sessionId, "Skill", { skill: "implement" });
+  observe("tdd-" + contract.sessionId, "Skill", { skill: "tdd" });
   if (${JSON.stringify(noChange)}) {
     const head = execFileSync("git", ["-C", ${JSON.stringify(repository)}, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     writeFileSync(outputPath, JSON.stringify({
@@ -194,6 +210,7 @@ if (phase === "implementation") {
     process.exit(0);
   }
   writeFileSync(${JSON.stringify(join(repository, "src", "feature.js"))}, "export const ticket = " + contract.ticket + ";\\n");
+  observe("workspace-" + contract.sessionId, "Write", { file_path: "src/feature.js" });
   execFileSync("git", ["-C", ${JSON.stringify(repository)}, "add", "src/feature.js"]);
   execFileSync("git", ["-C", ${JSON.stringify(repository)}, "-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", "commit", "--quiet", "-m", "agent intermediate"]);
   const head = execFileSync("git", ["-C", ${JSON.stringify(repository)}, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -211,6 +228,7 @@ if (phase === "implementation") {
     ticket: contract.ticket,
   }) + "\\n");
 } else if (phase === "review") {
+  observe("review-" + contract.sessionId, "Skill", { skill: "code-review" });
   const head = execFileSync("git", ["-C", ${JSON.stringify(repository)}, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   writeFileSync(outputPath, JSON.stringify({
     events: [
@@ -245,6 +263,7 @@ function processEnvironment(docker, ticket) {
   const scope = `ticket:${ticket}`;
   return {
     ...process.env,
+    ANTHROPIC_BASE_URL: "https://api.example.com",
     ANTHROPIC_AUTH_TOKEN: "real-provider-token-must-not-enter-agent",
     GITHUB_TOKEN: "github-token-must-not-enter-agent",
     SANDCASTLE_BATCH_ID: "p1-aaaaaaaaaaaa-r9001",
@@ -273,7 +292,7 @@ function processArgs({ before, config, seam, snapshot, ticket }) {
     "--image",
     image,
     "--agent-driver-json",
-    '["fake-agent"]',
+    '["sandcastle-queue","agent-driver"]',
   ];
 }
 
@@ -322,15 +341,20 @@ test("each Ticket gets a fresh context with host verification before fixed-point
   assert.equal(results[0].sessionId === results[1].sessionId, false);
 
   const stageRuns = docker.calls().filter(
-    ({ argv }) => argv[0] === "run" && !argv.includes("egress-proxy"),
+    ({ argv }) =>
+      argv[0] === "run" &&
+      !argv.includes("egress-proxy") &&
+      !argv.includes("credential-broker"),
   );
   const observedCommands = stageRuns.map(({ argv }) => {
     const imageIndex = argv.indexOf(image);
-    return argv.slice(imageIndex + 1);
+    const entrypoint = argv[argv.indexOf("--entrypoint") + 1];
+    return [entrypoint, ...argv.slice(imageIndex + 1)];
   });
   assert.deepEqual(observedCommands, [
     [
-      "fake-agent",
+      "sandcastle-queue",
+      "agent-driver",
       "--sandcastle-phase",
       "implementation",
       "--contract",
@@ -341,7 +365,8 @@ test("each Ticket gets a fresh context with host verification before fixed-point
     ["node", "tests.mjs"],
     ["node", "verify.mjs"],
     [
-      "fake-agent",
+      "sandcastle-queue",
+      "agent-driver",
       "--sandcastle-phase",
       "review",
       "--contract",
@@ -350,7 +375,8 @@ test("each Ticket gets a fresh context with host verification before fixed-point
       "/sandcastle/output/review.json",
     ],
     [
-      "fake-agent",
+      "sandcastle-queue",
+      "agent-driver",
       "--sandcastle-phase",
       "implementation",
       "--contract",
@@ -361,7 +387,8 @@ test("each Ticket gets a fresh context with host verification before fixed-point
     ["node", "tests.mjs"],
     ["node", "verify.mjs"],
     [
-      "fake-agent",
+      "sandcastle-queue",
+      "agent-driver",
       "--sandcastle-phase",
       "review",
       "--contract",
@@ -381,7 +408,9 @@ test("each Ticket gets a fresh context with host verification before fixed-point
     true,
   );
   assert.equal(
-    JSON.stringify(docker.calls()).includes("real-provider-token-must-not-enter-agent"),
+    JSON.stringify(
+      docker.calls().filter(({ argv }) => !argv.includes("credential-broker")),
+    ).includes("real-provider-token-must-not-enter-agent"),
     false,
   );
   assert.equal(
@@ -418,7 +447,10 @@ test("host test failure blocks review even after Agent reports implementation su
     "TICKET_VERIFICATION_FAILED",
   );
   const stageRuns = docker.calls().filter(
-    ({ argv }) => argv[0] === "run" && !argv.includes("egress-proxy"),
+    ({ argv }) =>
+      argv[0] === "run" &&
+      !argv.includes("egress-proxy") &&
+      !argv.includes("credential-broker"),
   );
   assert.equal(stageRuns.some(({ argv }) => argv.includes("failing-tests.mjs")), true);
   assert.equal(
@@ -459,7 +491,10 @@ test("a verified zero-diff Agent result waits for human no-change acceptance wit
   assert.equal(outcome.head, before);
   assert.deepEqual(Object.keys(outcome.toolCalls).sort(), ["implement", "tdd"]);
   const stageRuns = docker.calls().filter(
-    ({ argv }) => argv[0] === "run" && !argv.includes("egress-proxy"),
+    ({ argv }) =>
+      argv[0] === "run" &&
+      !argv.includes("egress-proxy") &&
+      !argv.includes("credential-broker"),
   );
   assert.equal(stageRuns.length, 1);
   assert.equal(stageRuns[0].argv.includes("implementation"), true);
@@ -484,7 +519,7 @@ test("missing pre-confirmed spec or testing seam blocks before sandbox launch", 
     "--image",
     image,
     "--agent-driver-json",
-    '["fake-agent"]',
+    '["sandcastle-queue","agent-driver"]',
   ];
   const missingSpec = spawnSync(
     process.execPath,
@@ -516,4 +551,33 @@ test("missing pre-confirmed spec or testing seam blocks before sandbox launch", 
     "TESTING_SEAM_MISSING",
   );
   assert.deepEqual(docker.calls(), []);
+});
+
+test("Agent-authored text cannot impersonate host-observed Skill tool results", () => {
+  const repository = createRepository();
+  const docker = createTicketDocker(repository, { selfSignedOnly: true });
+  const before = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  const result = spawnSync(
+    process.execPath,
+    processArgs({
+      before,
+      config: writeConfig(),
+      seam: writeSeam(),
+      snapshot: writeSnapshot(2),
+      ticket: 2,
+    }),
+    {
+      cwd: repository,
+      encoding: "utf8",
+      env: processEnvironment(docker, 2),
+    },
+  );
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(
+    JSON.parse(result.stdout).diagnostics[0].code,
+    "TICKET_SKILL_RECEIPT_MISSING",
+  );
 });

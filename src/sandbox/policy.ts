@@ -7,10 +7,13 @@ import {
   InfrastructureError,
   isExactNetworkHost,
   readProjectConfig,
+  resolveModelRoles,
   type ProjectConfig,
 } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { isGitObjectId } from "../git/object-id.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
 
 const builtInRegistryHosts: Record<string, string[]> = {
   "go-module": ["proxy.golang.org", "storage.googleapis.com", "sum.golang.org"],
@@ -65,6 +68,7 @@ export interface SandboxPlan {
   session: {
     batchId: string;
     id: string;
+    models: string[];
     scope: string;
   };
   stage: SandboxStage;
@@ -76,6 +80,22 @@ export interface SandboxExecutionResult {
   mode: "executed";
   planHash: string;
   stage: SandboxStage;
+}
+
+export interface SandboxSkillReceipt {
+  sequence: number;
+  skill: "code-review" | "implement" | "tdd";
+  toolCallId: string;
+}
+
+export interface SandboxAgentObservation {
+  firstWorkspaceChangeSequence: number | null;
+  skillReceipts: SandboxSkillReceipt[];
+}
+
+export interface ObservedSandboxExecution {
+  observation: SandboxAgentObservation;
+  result: SandboxExecutionResult;
 }
 
 export interface ProtectedPathResult {
@@ -329,6 +349,9 @@ export async function createSandboxPlan(
     session: {
       batchId: session.batchId,
       id: sessionId,
+      models: [
+        ...new Set(Object.values(resolveModelRoles(config).roles)),
+      ].sort((left, right) => left.localeCompare(right)),
       scope: session.scope,
     },
     stage: sandboxStage,
@@ -419,11 +442,96 @@ function commonContainerArguments(): string[] {
   ];
 }
 
-export async function executeSandboxPlan(
+function agentObservation(source: string): SandboxAgentObservation {
+  const pending = new Map<
+    string,
+    { sequence: number; skill: SandboxSkillReceipt["skill"] }
+  >();
+  const skillReceipts: SandboxSkillReceipt[] = [];
+  let firstWorkspaceChangeSequence: number | null = null;
+  let sequence = 0;
+  for (const line of source.split(/\r?\n/u)) {
+    if (!line) continue;
+    let candidate: unknown;
+    try {
+      candidate = JSON.parse(line) as unknown;
+    } catch {
+      continue;
+    }
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
+      continue;
+    }
+    const message = (candidate as { message?: unknown }).message;
+    if (message === null || typeof message !== "object" || Array.isArray(message)) {
+      continue;
+    }
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block === null || typeof block !== "object" || Array.isArray(block)) {
+        continue;
+      }
+      const event = block as Record<string, unknown>;
+      sequence += 1;
+      if (
+        event.type === "tool_use" &&
+        typeof event.id === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(event.id) &&
+        event.name === "Skill" &&
+        event.input !== null &&
+        typeof event.input === "object" &&
+        !Array.isArray(event.input)
+      ) {
+        const skill = (event.input as { skill?: unknown }).skill;
+        if (
+          skill === "implement" ||
+          skill === "tdd" ||
+          skill === "code-review"
+        ) {
+          pending.set(event.id, { sequence, skill });
+        }
+      } else if (
+        event.type === "tool_use" &&
+        event.name !== "Skill" &&
+        !new Set(["Glob", "Grep", "Read", "Task", "WebFetch", "WebSearch"])
+          .has(String(event.name)) &&
+        firstWorkspaceChangeSequence === null
+      ) {
+        firstWorkspaceChangeSequence = sequence;
+      } else if (
+        event.type === "tool_result" &&
+        typeof event.tool_use_id === "string" &&
+        event.is_error !== true
+      ) {
+        const observed = pending.get(event.tool_use_id);
+        if (observed) {
+          skillReceipts.push({
+            sequence: observed.sequence,
+            skill: observed.skill,
+            toolCallId: event.tool_use_id,
+          });
+          pending.delete(event.tool_use_id);
+        }
+      }
+    }
+  }
+  return {
+    firstWorkspaceChangeSequence,
+    skillReceipts: skillReceipts.sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+  };
+}
+
+async function executeSandboxPlanInternal(
   plan: SandboxPlan,
   confirmation: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<SandboxExecutionResult> {
+): Promise<ObservedSandboxExecution> {
   const expectedHash = sha256(canonicalJson(planWithoutHash(plan)));
   if (confirmation !== plan.planHash || expectedHash !== plan.planHash) {
     throw configurationError(
@@ -452,6 +560,25 @@ export async function executeSandboxPlan(
     ...hostEnvironment,
     SANDCASTLE_EGRESS_ALLOWLIST: plan.network.allowedHosts.join(","),
   };
+  const providerToken = environment.ANTHROPIC_AUTH_TOKEN;
+  const providerBaseUrl = environment.ANTHROPIC_BASE_URL;
+  if (!providerToken || !providerBaseUrl) {
+    throw configurationError(
+      "SANDBOX_BROKER_CREDENTIAL_MISSING",
+      "Sandbox execution requires host-only provider credentials for its broker sidecar.",
+    );
+  }
+  const brokerEnvironment = {
+    ...hostEnvironment,
+    ANTHROPIC_AUTH_TOKEN: providerToken,
+    ANTHROPIC_BASE_URL: providerBaseUrl,
+    SANDCASTLE_BROKER_BATCH_ID: session.batchId,
+    SANDCASTLE_BROKER_HOST: "0.0.0.0",
+    SANDCASTLE_BROKER_MODELS: JSON.stringify(plan.session.models),
+    SANDCASTLE_BROKER_PORT: "8081",
+    SANDCASTLE_BROKER_SCOPE: session.scope,
+    SANDCASTLE_BROKER_SESSION_TOKEN: session.token,
+  };
   const stageEnvironment = {
     ...hostEnvironment,
     ANTHROPIC_AUTH_TOKEN: session.token,
@@ -463,8 +590,10 @@ export async function executeSandboxPlan(
     SANDCASTLE_SCOPE: session.scope,
   };
   const proxyName = `${plan.network.name}-egress`;
+  const brokerName = `${plan.network.name}-broker`;
   let networkCreated = false;
   let proxyCreated = false;
+  let brokerCreated = false;
   let primaryError: unknown;
   let stageResult: CommandResult | null = null;
   try {
@@ -476,6 +605,56 @@ export async function executeSandboxPlan(
       "Unable to create the required internal Docker network.",
     );
     networkCreated = true;
+    await requireDockerSuccess(
+      docker,
+      [
+        "run",
+        "--detach",
+        "--name",
+        brokerName,
+        "--network",
+        "bridge",
+        ...commonContainerArguments(),
+        "--env",
+        "ANTHROPIC_AUTH_TOKEN",
+        "--env",
+        "ANTHROPIC_BASE_URL",
+        "--env",
+        "SANDCASTLE_BROKER_BATCH_ID",
+        "--env",
+        "SANDCASTLE_BROKER_HOST",
+        "--env",
+        "SANDCASTLE_BROKER_MODELS",
+        "--env",
+        "SANDCASTLE_BROKER_PORT",
+        "--env",
+        "SANDCASTLE_BROKER_SCOPE",
+        "--env",
+        "SANDCASTLE_BROKER_SESSION_TOKEN",
+        "--user",
+        "65532:65532",
+        plan.image,
+        "credential-broker",
+      ],
+      brokerEnvironment,
+      "SANDBOX_BROKER_START_FAILED",
+      "Unable to start the scoped credential broker sidecar.",
+    );
+    brokerCreated = true;
+    await requireDockerSuccess(
+      docker,
+      [
+        "network",
+        "connect",
+        "--alias",
+        "sandcastle-broker",
+        plan.network.name,
+        brokerName,
+      ],
+      hostEnvironment,
+      "SANDBOX_BROKER_ATTACH_FAILED",
+      "Unable to attach the credential broker to the internal network.",
+    );
     await requireDockerSuccess(
       docker,
       [
@@ -543,12 +722,16 @@ export async function executeSandboxPlan(
         ]),
         "--mount",
         `type=bind,src=${plan.repository},dst=/workspace`,
+        "--mount",
+        `type=bind,src=${join(plan.repository, ".git")},dst=/workspace/.git,readonly`,
         "--user",
         plan.user,
         "--workdir",
         "/workspace",
+        "--entrypoint",
+        plan.command[0] as string,
         plan.image,
-        ...plan.command,
+        ...plan.command.slice(1),
       ],
       stageEnvironment,
     );
@@ -560,6 +743,14 @@ export async function executeSandboxPlan(
       const result = await runCommand(
         docker,
         ["rm", "--force", proxyName],
+        hostEnvironment,
+      );
+      cleanupFailed ||= result.code !== 0;
+    }
+    if (brokerCreated) {
+      const result = await runCommand(
+        docker,
+        ["rm", "--force", brokerName],
         hostEnvironment,
       );
       cleanupFailed ||= result.code !== 0;
@@ -589,11 +780,30 @@ export async function executeSandboxPlan(
     );
   }
   return {
-    exitCode: stageResult.code,
-    mode: "executed",
-    planHash: plan.planHash,
-    stage: plan.stage,
+    observation: agentObservation(stageResult.stdout),
+    result: {
+      exitCode: stageResult.code,
+      mode: "executed",
+      planHash: plan.planHash,
+      stage: plan.stage,
+    },
   };
+}
+
+export async function executeObservedSandboxPlan(
+  plan: SandboxPlan,
+  confirmation: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<ObservedSandboxExecution> {
+  return executeSandboxPlanInternal(plan, confirmation, environment);
+}
+
+export async function executeSandboxPlan(
+  plan: SandboxPlan,
+  confirmation: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<SandboxExecutionResult> {
+  return (await executeSandboxPlanInternal(plan, confirmation, environment)).result;
 }
 
 function git(
@@ -607,6 +817,7 @@ function git(
       {
         cwd: repository,
         encoding: "utf8",
+        env: createHostGitEnvironment(),
         maxBuffer: 16 * 1024 * 1024,
         timeout: 10_000,
       },
@@ -632,6 +843,8 @@ function nulPaths(source: string): string[] {
 
 export function isProtectedControlPlanePath(path: string): boolean {
   return (
+    path === ".gitattributes" ||
+    path.endsWith("/.gitattributes") ||
     path === ".github/workflows/sandcastle.yml" ||
     path === "skills-lock.json" ||
     path.startsWith(".github/actions/sandcastle/") ||
@@ -644,7 +857,7 @@ export async function checkProtectedPaths(
   repositoryPath: string,
   beforeHead: string,
 ): Promise<ProtectedPathResult> {
-  if (!/^[a-f0-9]{40,64}$/u.test(beforeHead)) {
+  if (!isGitObjectId(beforeHead)) {
     throw configurationError(
       "PROTECTED_BASE_INVALID",
       "Protected-path inspection requires a complete fixed commit SHA.",
@@ -653,7 +866,16 @@ export async function checkProtectedPaths(
   const root = await resolveRepositoryRoot(repositoryPath);
   await git(root, ["cat-file", "-e", `${beforeHead}^{commit}`]);
   const [tracked, untracked] = await Promise.all([
-    git(root, ["diff", "--name-only", "--no-renames", "-z", beforeHead, "--"]),
+    git(root, [
+      "diff",
+      "--name-only",
+      "--no-ext-diff",
+      "--no-renames",
+      "--no-textconv",
+      "-z",
+      beforeHead,
+      "--",
+    ]),
     git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--"]),
   ]);
   const changedPaths = [

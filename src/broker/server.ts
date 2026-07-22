@@ -295,6 +295,16 @@ export class CredentialBroker {
   }
 
   createSession(request: BrokerSessionRequest): BrokerSessionCredential {
+    return this.registerSession(
+      request,
+      randomBytes(32).toString("base64url"),
+    );
+  }
+
+  registerSession(
+    request: BrokerSessionRequest,
+    token: string,
+  ): BrokerSessionCredential {
     if (!this.#baseUrl) {
       throw infrastructureError(
         "BROKER_NOT_LISTENING",
@@ -314,13 +324,13 @@ export class CredentialBroker {
         (model) => typeof model !== "string" || model.length === 0 || model.length > 256,
       ) ||
       new Set(request.models).size !== request.models.length
+      || !/^[A-Za-z0-9_-]{32,}$/u.test(token)
     ) {
       throw configurationError(
         "BROKER_SESSION_INVALID",
         "Broker session requires a bounded TTL and a unique non-empty model allowlist.",
       );
     }
-    const token = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + request.ttlSeconds * 1000;
     this.#sessions.set(sha256(token), {
       batchId: request.batchId,
@@ -600,6 +610,45 @@ export async function runCredentialBrokerProcess(
     environment.SANDCASTLE_BROKER_HOST ?? "127.0.0.1",
     Number(portSource),
   );
+  const bootstrapToken = environment.SANDCASTLE_BROKER_SESSION_TOKEN;
+  if (bootstrapToken) {
+    const batchId = environment.SANDCASTLE_BROKER_BATCH_ID;
+    const scope = environment.SANDCASTLE_BROKER_SCOPE;
+    const modelsSource = environment.SANDCASTLE_BROKER_MODELS;
+    let models: unknown;
+    try {
+      models = JSON.parse(modelsSource ?? "null") as unknown;
+    } catch {
+      models = null;
+    }
+    if (
+      !batchId ||
+      !scope ||
+      !Array.isArray(models) ||
+      !models.every((model) => typeof model === "string")
+    ) {
+      await broker.close();
+      throw configurationError(
+        "BROKER_BOOTSTRAP_INVALID",
+        "A broker sidecar requires one complete host-created session.",
+      );
+    }
+    broker.registerSession(
+      { batchId, models, scope, ttlSeconds: maximumSessionSeconds },
+      bootstrapToken,
+    );
+    writeControlMessage({ baseUrl, event: "ready" });
+    await new Promise<void>((resolve) => {
+      const stop = (): void => {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        void broker.close().finally(resolve);
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+    return;
+  }
   writeControlMessage({ baseUrl, event: "ready" });
 
   const input = createInterface({ input: process.stdin });

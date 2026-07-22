@@ -4,7 +4,6 @@ import {
   chmod,
   mkdir,
   mkdtemp,
-  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -22,12 +21,16 @@ import {
   readSpecSnapshot,
   type TicketSpecSnapshot,
 } from "../github/frontier.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { isGitObjectId } from "../git/object-id.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { readBoundedJsonFile } from "../json.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
 import {
   checkProtectedPaths,
   createSandboxPlan,
-  executeSandboxPlan,
+  executeObservedSandboxPlan,
+  type SandboxAgentObservation,
   type SandboxMount,
 } from "../sandbox/policy.js";
 
@@ -166,6 +169,7 @@ function git(repository: string, arguments_: string[]): Promise<CommandResult> {
       {
         cwd: repository,
         encoding: "utf8",
+        env: createHostGitEnvironment(),
         maxBuffer: 32 * 1024 * 1024,
         timeout: 10_000,
       },
@@ -193,21 +197,27 @@ async function repositoryFingerprint(repository: string): Promise<string> {
   const [head, status, diff] = await Promise.all([
     git(repository, ["rev-parse", "HEAD"]),
     git(repository, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
-    git(repository, ["diff", "--binary", "HEAD", "--"]),
+    git(repository, [
+      "diff",
+      "--binary",
+      "--no-ext-diff",
+      "--no-textconv",
+      "HEAD",
+      "--",
+    ]),
   ]);
   return sha256(`${head.stdout}\u0000${status.stdout}\u0000${diff.stdout}`);
 }
 
 async function readTestingSeam(path: string): Promise<TestingSeam> {
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
+  const result = await readBoundedJsonFile(path, 1024 * 1024);
+  if (!result.ok) {
     throw configurationError(
       "TESTING_SEAM_INVALID",
       "Unable to read a valid pre-confirmed testing seam.",
     );
   }
+  const candidate = result.value;
   if (
     candidate === null ||
     typeof candidate !== "object" ||
@@ -237,7 +247,7 @@ async function readTestingSeam(path: string): Promise<TestingSeam> {
 }
 
 function validHead(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
+  return isGitObjectId(value);
 }
 
 function validToolEvent(candidate: unknown): candidate is SkillToolEvent {
@@ -290,29 +300,26 @@ function validEvents(candidate: unknown): candidate is RuntimeEvent[] {
 }
 
 async function readRuntimeResult(path: string): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, 1024 * 1024);
+  if (!result.ok && result.reason === "unavailable") {
     throw configurationError(
       "TICKET_EVIDENCE_MISSING",
       "Agent runtime did not produce machine-readable evidence.",
     );
   }
-  if (source.length > 1024 * 1024) {
+  if (!result.ok && result.reason === "too-large") {
     throw configurationError(
       "TICKET_EVIDENCE_INVALID",
       "Agent runtime evidence exceeds the supported size.",
     );
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw configurationError(
       "TICKET_EVIDENCE_INVALID",
       "Agent runtime evidence is not valid JSON.",
     );
   }
+  return result.value;
 }
 
 function implementationEvidence(
@@ -320,6 +327,7 @@ function implementationEvidence(
   ticket: number,
   sessionId: string,
   head: string,
+  observation: SandboxAgentObservation,
 ): { implement: string; status: "implemented" | "no-change"; tdd: string } {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
     throw configurationError(
@@ -351,17 +359,35 @@ function implementationEvidence(
     (event): event is SkillToolEvent => validToolEvent(event) && event.skill === "tdd",
   );
   const firstChange = result.events.find(validWorkspaceEvent);
+  const observedImplement = observation.skillReceipts.find(
+    ({ skill, toolCallId }) =>
+      skill === "implement" && toolCallId === implement?.toolCallId,
+  );
+  const observedTdd = observation.skillReceipts.find(
+    ({ skill, toolCallId }) => skill === "tdd" && toolCallId === tdd?.toolCallId,
+  );
   if (
     !implement ||
     !tdd ||
+    !observedImplement ||
+    !observedTdd ||
+    observedImplement.sequence >= observedTdd.sequence ||
     implement.sequence >= tdd.sequence ||
     (result.status === "implemented" &&
-      (!firstChange || tdd.sequence >= firstChange.sequence)) ||
-    (result.status === "no-change" && firstChange !== undefined)
+      (!firstChange ||
+        observation.firstWorkspaceChangeSequence === null ||
+        observedTdd.sequence >= observation.firstWorkspaceChangeSequence)) ||
+    (result.status === "no-change" &&
+      (firstChange !== undefined ||
+        observation.firstWorkspaceChangeSequence !== null))
   ) {
     throw configurationError(
-      "TICKET_SKILL_PROTOCOL_INVALID",
-      "Ticket runtime must enter implement and complete tdd before the first workspace change.",
+      observedImplement && observedTdd
+        ? "TICKET_SKILL_PROTOCOL_INVALID"
+        : "TICKET_SKILL_RECEIPT_MISSING",
+      observedImplement && observedTdd
+        ? "Ticket runtime must enter implement and complete tdd before the first host-observed workspace change."
+        : "Agent-authored evidence does not match host-observed Skill tool results.",
     );
   }
   return {
@@ -397,6 +423,7 @@ function reviewEvidence(
     ticket: number;
     verificationHash: string;
   },
+  observation: SandboxAgentObservation,
 ): { codeReview: string; findings: TicketReviewFinding[] } {
   if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
     throw configurationError(
@@ -432,6 +459,17 @@ function reviewEvidence(
       "Ticket review lacks a successful code-review tool result.",
     );
   }
+  if (
+    !observation.skillReceipts.some(
+      ({ skill, toolCallId }) =>
+        skill === "code-review" && toolCallId === codeReview.toolCallId,
+    )
+  ) {
+    throw configurationError(
+      "TICKET_SKILL_RECEIPT_MISSING",
+      "Agent-authored review evidence does not match a host-observed code-review tool result.",
+    );
+  }
   return { codeReview: codeReview.toolCallId, findings: result.findings };
 }
 
@@ -450,7 +488,10 @@ async function runSandboxCommand(
   command: string[],
   environment: NodeJS.ProcessEnv,
   mounts: SandboxMount[] = [],
-): Promise<number> {
+): Promise<{
+  exitCode: number;
+  observation: SandboxAgentObservation;
+}> {
   const plan = await createSandboxPlan(
     repository,
     configPath,
@@ -461,7 +502,15 @@ async function runSandboxCommand(
     environment,
     mounts,
   );
-  return (await executeSandboxPlan(plan, plan.planHash, environment)).exitCode;
+  const executed = await executeObservedSandboxPlan(
+    plan,
+    plan.planHash,
+    environment,
+  );
+  return {
+    exitCode: executed.result.exitCode,
+    observation: executed.observation,
+  };
 }
 
 async function verifyCommands(
@@ -475,7 +524,7 @@ async function verifyCommands(
   const records: VerificationRecord[] = [];
   for (const group of ["tests", "verification"] as const) {
     for (const [index, command] of commands[group].entries()) {
-      const exitCode = await runSandboxCommand(
+      const { exitCode } = await runSandboxCommand(
         repository,
         configPath,
         "verification",
@@ -512,10 +561,20 @@ export async function processTicket(
       "Ticket number must be a positive safe integer.",
     );
   }
-  if (!/^[a-f0-9]{40,64}$/u.test(options.beforeHead)) {
+  if (!isGitObjectId(options.beforeHead)) {
     throw configurationError(
       "TICKET_BASE_INVALID",
       "Ticket processing requires a complete before-HEAD SHA.",
+    );
+  }
+  if (
+    options.agentDriver.length !== 2 ||
+    options.agentDriver[0] !== "sandcastle-queue" ||
+    options.agentDriver[1] !== "agent-driver"
+  ) {
+    throw configurationError(
+      "TICKET_AGENT_DRIVER_INVALID",
+      "Ticket processing requires the pinned Sandcastle agent driver.",
     );
   }
   const root = await resolveRepositoryRoot(repositoryPath);
@@ -583,7 +642,7 @@ export async function processTicket(
   try {
     await writeContract(contractPath, baseContract);
     const implementationOutput = "/sandcastle/output/implementation.json";
-    const implementationExit = await runSandboxCommand(
+    const implementationExecution = await runSandboxCommand(
       root,
       options.configPath,
       "agent",
@@ -601,7 +660,7 @@ export async function processTicket(
       environment,
       mounts,
     );
-    if (implementationExit !== 0) {
+    if (implementationExecution.exitCode !== 0) {
       throw configurationError(
         "TICKET_AGENT_FAILED",
         "Ticket implementation Agent exited unsuccessfully.",
@@ -613,9 +672,18 @@ export async function processTicket(
       options.ticket,
       sessionId,
       implementationHead,
+      implementationExecution.observation,
     );
     const [changed, postImplementationStatus] = await Promise.all([
-      git(root, ["diff", "--name-only", "--no-renames", options.beforeHead, "--"]),
+      git(root, [
+        "diff",
+        "--name-only",
+        "--no-ext-diff",
+        "--no-renames",
+        "--no-textconv",
+        options.beforeHead,
+        "--",
+      ]),
       git(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
     ]);
     const hasTicketDiff =
@@ -683,7 +751,7 @@ export async function processTicket(
     };
     await writeContract(contractPath, reviewContract);
     const beforeReview = await repositoryFingerprint(root);
-    const reviewExit = await runSandboxCommand(
+    const reviewExecution = await runSandboxCommand(
       root,
       options.configPath,
       "agent",
@@ -701,7 +769,7 @@ export async function processTicket(
       environment,
       mounts,
     );
-    if (reviewExit !== 0) {
+    if (reviewExecution.exitCode !== 0) {
       throw configurationError(
         "TICKET_REVIEW_FAILED",
         "Ticket review Agent exited unsuccessfully.",
@@ -723,6 +791,7 @@ export async function processTicket(
         ticket: options.ticket,
         verificationHash,
       },
+      reviewExecution.observation,
     );
     await checkProtectedPaths(root, options.beforeHead);
     if (review.findings.length > 0) {

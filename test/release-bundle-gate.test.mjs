@@ -246,6 +246,38 @@ test("release workflow and target template pin the immutable control-plane image
   assert.match(dockerfile, /DEBIAN_SNAPSHOT=20260722T000000Z/u);
   assert.match(dockerfile, /org\.opencontainers\.image\.version="1\.0\.0"/u);
   assert.match(dockerfile, /npm ci --ignore-scripts/u);
+  assert.doesNotMatch(
+    dockerfile,
+    /COPY --from=build \/opt\/source\/dist \.\/dist/u,
+  );
+  assert.doesNotMatch(
+    dockerfile,
+    /\/opt\/source\/dist\/(?:installer|release)(?:\s|\/)/u,
+  );
+  for (const runtimeDirectory of [
+    "agent",
+    "audit",
+    "batch",
+    "broker",
+    "final-review",
+    "git",
+    "github",
+    "sandbox",
+    "ticket",
+    "workflow",
+  ]) {
+    assert.match(
+      dockerfile,
+      new RegExp(
+        `COPY --from=build /opt/source/dist/${runtimeDirectory} ./dist/${runtimeDirectory}`,
+        "u",
+      ),
+    );
+  }
+  assert.match(
+    dockerfile,
+    /COPY --from=build \/opt\/source\/dist\/json\.js \.\/dist\/json\.js/u,
+  );
   assert.match(dockerfile, /USER node/u);
   assert.doesNotMatch(`${workflow}\n${dockerfile}\n${templates}`, /:latest\b/u);
   assert.match(templates, /ghcr\.io\/troymayrain\/setup-sandcastle-queue-control-plane@sha256:/u);

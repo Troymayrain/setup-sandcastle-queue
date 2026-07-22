@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 
 import { InfrastructureError } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { hasExactShape, isRecord } from "../json.js";
 import { checkProtectedPaths } from "../sandbox/policy.js";
 import type {
   FinalReviewDispatchInput,
@@ -8,7 +11,6 @@ import type {
 } from "./run.js";
 
 const batchIdPattern = /^p[1-9][0-9]*-[a-f0-9]{12}-r[1-9][0-9]*$/u;
-const gitShaPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const hashPattern = /^[a-f0-9]{64}$/u;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -137,6 +139,7 @@ function git(
       {
         cwd: repositoryPath,
         encoding: "utf8",
+        env: createHostGitEnvironment(),
         maxBuffer: 16 * 1024 * 1024,
         timeout: 30_000,
       },
@@ -155,23 +158,6 @@ function git(
       },
     );
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  required: string[],
-  optional: string[] = [],
-): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => allowed.has(key))
-  );
 }
 
 function validFinding(value: unknown): value is FinalReviewFinding {
@@ -201,8 +187,8 @@ function validAxisExecution(value: unknown): value is FinalReviewAxisExecution {
 function validDispatchInput(input: FinalReviewDispatchInput): boolean {
   return (
     batchIdPattern.test(input.batchId) &&
-    gitShaPattern.test(input.batchHead) &&
-    gitShaPattern.test(input.targetBase) &&
+    isGitObjectId(input.batchHead) &&
+    isGitObjectId(input.targetBase) &&
     Number.isSafeInteger(input.pullRequest) &&
     input.pullRequest > 0
   );
@@ -298,7 +284,7 @@ function validateReviewResult(
     !uuidPattern.test(result.auditEventId) ||
     progress.history.some(({ auditEventId }) => auditEventId === result.auditEventId) ||
     result.batchHead !== progress.batchHead ||
-    !gitShaPattern.test(result.reviewedHead) ||
+    !isGitObjectId(result.reviewedHead) ||
     !hashPattern.test(result.verificationHash) ||
     !hasExactShape(result.axes, ["Spec", "Standards"]) ||
     !validAxisExecution(result.axes.Spec) ||
@@ -346,7 +332,7 @@ function validateFixResult(
     !uuidPattern.test(result.auditEventId) ||
     progress.history.some(({ auditEventId }) => auditEventId === result.auditEventId) ||
     result.beforeHead !== progress.batchHead ||
-    !gitShaPattern.test(result.head) ||
+    !isGitObjectId(result.head) ||
     result.head === result.beforeHead ||
     !uuidPattern.test(result.sessionId) ||
     used.sessions.has(result.sessionId) ||
@@ -518,7 +504,7 @@ export async function acceptHumanFinalFix(
     !uuidPattern.test(input.auditEventId) ||
     progress.history.some(({ auditEventId }) => auditEventId === input.auditEventId) ||
     input.beforeHead !== progress.batchHead ||
-    !gitShaPattern.test(input.head) ||
+    !isGitObjectId(input.head) ||
     input.head === input.beforeHead
   ) {
     throw infrastructureError(

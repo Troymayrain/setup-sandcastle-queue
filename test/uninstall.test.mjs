@@ -6,6 +6,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -347,4 +349,24 @@ test("uninstall restores earlier removals when a later filesystem operation fail
   paths.forEach((path, index) => {
     assert.deepEqual(readFileSync(path), contentsBefore[index]);
   });
+});
+
+test("uninstall refuses managed paths reached through a symlinked parent", async () => {
+  const { createUninstallPreview } = await import("../dist/index.js");
+  const repository = createRepository();
+  install(repository);
+  const sandcastle = join(repository, ".sandcastle");
+  const outside = mkdtempSync(join(tmpdir(), "sandcastle-uninstall-outside-"));
+  const managed = join(outside, "managed");
+  renameSync(sandcastle, managed);
+  symlinkSync(managed, sandcastle);
+
+  await assert.rejects(
+    createUninstallPreview(repository),
+    (error) =>
+      error.diagnostics?.some(
+        ({ code }) => code === "INSTALL_PATH_SYMLINK_FORBIDDEN",
+      ),
+  );
+  assert.equal(existsSync(join(managed, "installation.json")), true);
 });

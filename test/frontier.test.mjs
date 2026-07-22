@@ -81,7 +81,7 @@ function issue(
   };
 }
 
-async function startGitHubServer() {
+async function startGitHubServer({ oversizedList = false } = {}) {
   const requests = [];
   const parent = issue(1, {
     body: "# Parent PRD\n\nTrusted parent specification.",
@@ -114,6 +114,17 @@ async function startGitHubServer() {
       request.url ===
       "/repos/acme/widget/issues?state=all&sort=created&direction=asc&per_page=100&page=1"
     ) {
+      if (oversizedList) {
+        response.end(
+          JSON.stringify([
+            {
+              number: 2,
+              padding: "x".repeat(16 * 1024 * 1024),
+            },
+          ]),
+        );
+        return;
+      }
       response.setHeader(
         "link",
         '</repos/acme/widget/issues?state=all&sort=created&direction=asc&per_page=100&page=2>; rel="next"',
@@ -298,6 +309,30 @@ test("status computes a trusted paginated frontier from latest per-issue facts",
     assert.equal(
       github.requests.every(({ method }) => method === "GET"),
       true,
+    );
+  } finally {
+    await github.close();
+  }
+});
+
+test("status rejects an oversized GitHub response through the CLI boundary", async () => {
+  const repository = createRepository();
+  const github = await startGitHubServer({ oversizedList: true });
+  try {
+    const result = await runCli(
+      ["status", "--parent", "1", "--config", writeConfig()],
+      repository,
+      {
+        ...process.env,
+        GITHUB_API_URL: github.apiUrl,
+        GITHUB_TOKEN: "github-token-must-not-leak",
+      },
+    );
+
+    assert.equal(result.status, 3, result.stderr);
+    assert.equal(
+      JSON.parse(result.stdout).diagnostics[0].code,
+      "GITHUB_API_INVALID_RESPONSE",
     );
   } finally {
     await github.close();

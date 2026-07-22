@@ -1,6 +1,9 @@
-import { readFile } from "node:fs/promises";
-
 import { ConfigurationError } from "../config.js";
+import {
+  hasExactShape,
+  isRecord,
+  readBoundedJsonFile,
+} from "../json.js";
 
 const shaPattern = /^[a-f0-9]{40}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
@@ -36,6 +39,11 @@ export const FIXTURE_LIFECYCLE_STEPS = [
 
 export type FixtureLifecycleStep = (typeof FIXTURE_LIFECYCLE_STEPS)[number];
 
+export interface CredentiallessFixtureInstallationEvidence {
+  operation: "adopt" | "install" | "reinstall" | "upgrade";
+  startingState: "fresh" | "managed" | "unmanaged";
+}
+
 export const GITHUB_CONTRACT_CAPABILITIES = [
   "pagination",
   "stale-reads",
@@ -58,6 +66,7 @@ export const ANTHROPIC_CONTRACT_CAPABILITIES = [
 export interface CredentiallessFixtureEvidence {
   candidateSha: string;
   fixture: CredentiallessFixtureId;
+  installation: CredentiallessFixtureInstallationEvidence;
   observations: {
     audit: true;
     repository: true;
@@ -67,6 +76,33 @@ export interface CredentiallessFixtureEvidence {
   schemaVersion: 1;
   steps: Array<{ id: FixtureLifecycleStep; status: "pass" }>;
   usedCredentials: false;
+}
+
+function expectedInstallation(
+  fixture: CredentiallessFixtureId,
+): CredentiallessFixtureInstallationEvidence {
+  if (fixture === "existing-install") {
+    return { operation: "reinstall", startingState: "managed" };
+  }
+  if (fixture === "adopt") {
+    return { operation: "adopt", startingState: "unmanaged" };
+  }
+  if (fixture === "upgrade") {
+    return { operation: "upgrade", startingState: "managed" };
+  }
+  return { operation: "install", startingState: "fresh" };
+}
+
+function validInstallation(
+  value: unknown,
+  fixture: CredentiallessFixtureId,
+): value is CredentiallessFixtureInstallationEvidence {
+  const expected = expectedInstallation(fixture);
+  return (
+    hasExactShape(value, ["operation", "startingState"]) &&
+    value.operation === expected.operation &&
+    value.startingState === expected.startingState
+  );
 }
 
 export interface CredentiallessContractEvidence {
@@ -95,21 +131,6 @@ export interface CredentiallessFixtureMatrixResult {
   fixtures: CredentiallessFixtureEvidence[];
   ok: boolean;
   schemaVersion: 1;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function exactStringArray(
@@ -144,6 +165,7 @@ function validFixtureEvidence(
     hasExactShape(value, [
       "candidateSha",
       "fixture",
+      "installation",
       "observations",
       "schemaVersion",
       "steps",
@@ -152,6 +174,7 @@ function validFixtureEvidence(
     value.schemaVersion === 1 &&
     value.candidateSha === candidateSha &&
     value.fixture === fixture &&
+    validInstallation(value.installation, fixture) &&
     value.usedCredentials === false &&
     hasExactShape(value.observations, [
       "audit",
@@ -308,10 +331,8 @@ export function evaluateCredentiallessFixtureMatrix(
 export async function readCredentiallessFixtureMatrixInput(
   path: string,
 ): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, maximumInputBytes);
+  if (!result.ok && result.reason === "unavailable") {
     throw new ConfigurationError([
       {
         code: "CREDENTIALLESS_CI_INPUT_UNAVAILABLE",
@@ -320,7 +341,7 @@ export async function readCredentiallessFixtureMatrixInput(
       },
     ]);
   }
-  if (Buffer.byteLength(source, "utf8") > maximumInputBytes) {
+  if (!result.ok && result.reason === "too-large") {
     throw new ConfigurationError([
       {
         code: "CREDENTIALLESS_CI_INPUT_TOO_LARGE",
@@ -329,9 +350,7 @@ export async function readCredentiallessFixtureMatrixInput(
       },
     ]);
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code: "CREDENTIALLESS_CI_INPUT_INVALID_JSON",
@@ -340,4 +359,5 @@ export async function readCredentiallessFixtureMatrixInput(
       },
     ]);
   }
+  return result.value;
 }

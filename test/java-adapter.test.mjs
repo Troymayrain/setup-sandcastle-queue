@@ -16,6 +16,12 @@ const strictMaven = [
   "--no-transfer-progress",
   "--strict-checksums",
 ];
+const maven399Sha256 =
+  "4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c";
+const officialMavenWrapper = readFileSync(
+  new URL("../assets/runtime/maven-wrapper-3.3.4/mvnw", import.meta.url),
+  "utf8",
+);
 
 function pom(dependencyVersion = "5.11.4", pluginVersion = "3.5.2") {
   return `<project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -47,8 +53,8 @@ function pom(dependencyVersion = "5.11.4", pluginVersion = "3.5.2") {
 `;
 }
 
-function wrapperProperties(checksum = "a".repeat(64)) {
-  return `distributionUrl=https\\://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip
+function wrapperProperties(checksum = maven399Sha256) {
+  return `distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip
 distributionSha256Sum=${checksum}
 `;
 }
@@ -63,7 +69,7 @@ function createJavaRepository() {
     join(repository, ".mvn", "wrapper", "maven-wrapper.properties"),
     wrapperProperties(),
   );
-  writeFileSync(join(repository, "mvnw"), "#!/bin/sh\nexec mvn \"$@\"\n", {
+  writeFileSync(join(repository, "mvnw"), officialMavenWrapper, {
     mode: 0o755,
   });
   execFileSync("git", ["-C", repository, "add", "."]);
@@ -158,7 +164,7 @@ test("java-maven fixes JDK 21 and a checksum-bound Maven Wrapper", async () => {
 
   writeFileSync(
     join(repository, ".mvn", "wrapper", "maven-wrapper.properties"),
-    wrapperProperties("b".repeat(64)),
+    `${wrapperProperties()}# reviewed properties drift\n`,
   );
   const changed = await proposeRuntime(repository);
   calls.length = 0;
@@ -187,11 +193,58 @@ test("java-maven rejects invalid wrapper checksums and non-JDK-21 runtimes", asy
     return true;
   });
 
+  const mismatchedChecksum = createJavaRepository();
+  writeFileSync(
+    join(
+      mismatchedChecksum,
+      ".mvn",
+      "wrapper",
+      "maven-wrapper.properties",
+    ),
+    wrapperProperties("b".repeat(64)),
+  );
+  await assert.rejects(proposeRuntime(mismatchedChecksum), (error) => {
+    assert.equal(error instanceof ConfigurationError, true);
+    assert.equal(error.diagnostics[0]?.code, "MAVEN_WRAPPER_CHECKSUM_INVALID");
+    return true;
+  });
+
+  const bypassingWrapper = createJavaRepository();
+  writeFileSync(
+    join(bypassingWrapper, "mvnw"),
+    '#!/bin/sh\nexec mvn "$@"\n',
+    { mode: 0o755 },
+  );
+  await assert.rejects(proposeRuntime(bypassingWrapper), (error) => {
+    assert.equal(error instanceof ConfigurationError, true);
+    assert.equal(error.diagnostics[0]?.code, "MAVEN_WRAPPER_INVALID");
+    return true;
+  });
+
   const java = createJavaRepository();
   writeFileSync(join(java, ".java-version"), "17.0.14\n");
   await assert.rejects(proposeRuntime(java), (error) => {
     assert.equal(error instanceof ConfigurationError, true);
     assert.equal(error.diagnostics[0]?.code, "JAVA_RUNTIME_INVALID");
+    return true;
+  });
+});
+
+test("java-maven rejects wrappers that only mention checksum machinery", async () => {
+  const { ConfigurationError, proposeRuntime } = await import("../dist/index.js");
+  const repository = createJavaRepository();
+  writeFileSync(
+    join(repository, "mvnw"),
+    `#!/bin/sh
+# .mvn/wrapper/maven-wrapper.properties distributionUrl distributionSha256Sum sha256sum shasum
+exec mvn "$@"
+`,
+    { mode: 0o755 },
+  );
+
+  await assert.rejects(proposeRuntime(repository), (error) => {
+    assert.equal(error instanceof ConfigurationError, true);
+    assert.equal(error.diagnostics[0]?.code, "MAVEN_WRAPPER_INVALID");
     return true;
   });
 });

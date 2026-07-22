@@ -8,10 +8,11 @@ import {
   type ProjectConfig,
 } from "../config.js";
 import { sha256 } from "../hash.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { isRecord, readBoundedJsonFile } from "../json.js";
 import { VERSION } from "../version.js";
 import {
   createInstallPlan,
-  resolveRepositoryRoot,
   type InstallPlan,
   type ConfigSchemaMigration,
   type UpgradeConflict,
@@ -46,22 +47,17 @@ function upgradeError(code: string, message: string, path = ""): ConfigurationEr
   return new ConfigurationError([{ code, message, path }]);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 async function readManifest(root: string): Promise<InstalledManifest> {
   const path = join(root, ".sandcastle", "installation.json");
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
+  const result = await readBoundedJsonFile(path, 4 * 1024 * 1024);
+  if (!result.ok) {
     throw upgradeError(
       "INSTALLATION_MANIFEST_INVALID",
       "A valid managed installation manifest is required for upgrade.",
       ".sandcastle/installation.json",
     );
   }
+  const candidate = result.value;
   if (
     !isRecord(candidate) ||
     candidate.schemaVersion !== 1 ||

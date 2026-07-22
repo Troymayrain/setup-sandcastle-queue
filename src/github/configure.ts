@@ -6,6 +6,8 @@ import {
   InfrastructureError,
   type ProjectConfig,
 } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { readBoundedGitHubResponseText } from "./response.js";
 
 const confirmationCategories = [
   "labels",
@@ -120,7 +122,7 @@ class GitHubClient {
         },
       ]);
     }
-    const source = await response.text();
+    const source = await readBoundedGitHubResponseText(response);
     let data: T | null = null;
     if (source) {
       try {
@@ -173,7 +175,7 @@ class GitHubClient {
         },
       ]);
     }
-    const source = await response.text();
+    const source = await readBoundedGitHubResponseText(response);
     let data: T | null = null;
     if (source) {
       try {
@@ -200,7 +202,12 @@ function gitRemote(repository: string): Promise<string> {
     execFile(
       "git",
       ["remote", "get-url", "origin"],
-      { cwd: repository, encoding: "utf8", timeout: 10_000 },
+      {
+        cwd: repository,
+        encoding: "utf8",
+        env: createHostGitEnvironment(),
+        timeout: 10_000,
+      },
       (error, stdout) => {
         if (error) {
           reject(

@@ -10,8 +10,13 @@ import {
   computeTicketFrontier,
   type FrontierResult,
 } from "../github/frontier.js";
+import { isGitObjectId } from "../git/object-id.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
 
 const workflowPath = "sandcastle.yml";
 const activeBatchRef = "refs/heads/sandcastle/active";
@@ -71,7 +76,7 @@ class BatchGitHubClient {
         `GitHub Batch ${method === "GET" ? "read" : "write"} failed with status ${response.status}.`,
       );
     }
-    const source = await response.text();
+    const source = await readBoundedGitHubResponseText(response);
     if (!source) {
       return { data: null, headers: response.headers, status: response.status };
     }
@@ -128,12 +133,6 @@ function clientFor(environment: NodeJS.ProcessEnv): BatchGitHubClient {
   );
 }
 
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
-  );
-}
-
 interface RepositoryBase {
   baseSha: string;
   defaultBranch: string;
@@ -157,7 +156,7 @@ async function readRepositoryBase(
     `/repos/${repository}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
   );
   const baseSha = reference.data?.object?.sha;
-  if (typeof baseSha !== "string" || !/^[a-f0-9]{40,64}$/u.test(baseSha)) {
+  if (!isGitObjectId(baseSha)) {
     throw infrastructureError(
       "GITHUB_API_INVALID_RESPONSE",
       "GitHub default-branch metadata omitted a valid commit SHA.",
@@ -200,7 +199,7 @@ async function hasActiveWorkflowRun(
     if (runs.some(({ status }) => activeRunStatuses.has(status as string))) {
       return true;
     }
-    if (!hasNextPage(response.headers)) {
+    if (!hasNextGitHubPage(response.headers)) {
       return false;
     }
   }
@@ -227,7 +226,7 @@ async function hasOpenBatchPullRequest(
     ) {
       return true;
     }
-    if (!hasNextPage(response.headers)) {
+    if (!hasNextGitHubPage(response.headers)) {
       return false;
     }
   }
@@ -461,7 +460,7 @@ function createBatchMetadata(
       "Batch parent must be a positive safe issue number.",
     );
   }
-  if (!/^[a-f0-9]{40,64}$/u.test(baseSha)) {
+  if (!isGitObjectId(baseSha)) {
     throw configurationError(
       "BATCH_BASE_INVALID",
       "Batch base must be a complete Git commit SHA.",

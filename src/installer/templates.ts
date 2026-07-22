@@ -70,6 +70,9 @@ on:
           - review-only
           - final-fix
           - abort
+          - accept-no-change
+          - complete-no-change
+          - finalize-batch
           - remote-doctor
       parent:
         description: Parent PRD issue number
@@ -81,6 +84,10 @@ on:
         type: string
       batch_id:
         description: Stable Batch identity for an existing Batch
+        required: false
+        type: string
+      ticket:
+        description: Ticket issue number for a no-change decision
         required: false
         type: string
       expected_head:
@@ -96,7 +103,7 @@ on:
         required: false
         type: string
       reason:
-        description: Human reason for abort or recovery
+        description: Human reason for abort, recovery, or no-change completion
         required: false
         type: string
 
@@ -133,7 +140,7 @@ jobs:
           PARENT: \${{ inputs.parent }}
         run: |
           set -euo pipefail
-          if [[ ! "$PARENT" =~ ^[1-9][0-9]*$ || ! "$BASE_SHA" =~ ^[a-f0-9]{40,64}$ ]]; then
+          if [[ ! "$PARENT" =~ ^[1-9][0-9]*$ || ! "$BASE_SHA" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]]; then
             exit 2
           fi
           printf 'batch-id=p%s-%s-r%s\\n' "$PARENT" "\${BASE_SHA:0:12}" "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
@@ -162,18 +169,23 @@ ${workflowPermissions("process")}
       - name: Check out the fixed host workspace
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
+          ref: sandcastle/\${{ inputs.operation == 'start' && needs.initialize-batch.outputs.batch-id || inputs.batch_id }}
       - name: Run the process host orchestrator
         env:
           ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
           SANDCASTLE_BATCH_ID: \${{ inputs.operation == 'start' && needs.initialize-batch.outputs.batch-id || inputs.batch_id }}
+          SANDCASTLE_CONTROL_PLANE_IMAGE: ${controlPlaneImage}
           SANDCASTLE_OPERATION: process
         run: >-
           sandcastle-queue workflow-host
           --operation process
+          --mode "\${{ inputs.operation }}"
           --batch-id "$SANDCASTLE_BATCH_ID"
+          --config .sandcastle/config.json
           --expected-head "\${{ inputs.expected_head }}"
           --predecessor-run-id "\${{ inputs.predecessor_run_id }}"
 
@@ -191,17 +203,21 @@ ${workflowPermissions("review-only")}
       - name: Check out the fixed host workspace
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
+          ref: sandcastle/\${{ inputs.batch_id }}
       - name: Run the review-only host orchestrator
         env:
           ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_CONTROL_PLANE_IMAGE: ${controlPlaneImage}
           SANDCASTLE_OPERATION: review-only
         run: >-
           sandcastle-queue workflow-host
           --operation review-only
           --batch-id "\${{ inputs.batch_id }}"
+          --config .sandcastle/config.json
           --expected-head "\${{ inputs.expected_head }}"
           --pull-request "\${{ inputs.pull_request }}"
 
@@ -219,17 +235,21 @@ ${workflowPermissions("final-fix")}
       - name: Check out the fixed host workspace
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
+          ref: sandcastle/\${{ inputs.batch_id }}
       - name: Run the final-fix host orchestrator
         env:
           ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_CONTROL_PLANE_IMAGE: ${controlPlaneImage}
           SANDCASTLE_OPERATION: final-fix
         run: >-
           sandcastle-queue workflow-host
           --operation final-fix
           --batch-id "\${{ inputs.batch_id }}"
+          --config .sandcastle/config.json
           --expected-head "\${{ inputs.expected_head }}"
           --pull-request "\${{ inputs.pull_request }}"
 
@@ -249,14 +269,93 @@ ${workflowPermissions("abort")}
       - name: Run the abort host orchestrator
         env:
           GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_CONTROL_PLANE_IMAGE: ${controlPlaneImage}
           SANDCASTLE_OPERATION: abort
         run: >-
           sandcastle-queue workflow-host
           --operation abort
           --batch-id "\${{ inputs.batch_id }}"
+          --config .sandcastle/config.json
           --expected-head "\${{ inputs.expected_head }}"
           --pull-request "\${{ inputs.pull_request }}"
           --reason "\${{ inputs.reason }}"
+
+  accept-no-change:
+    if: \${{ inputs.operation == 'accept-no-change' }}
+    name: Accept one Ticket with no code change
+    runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
+    permissions:
+${workflowPermissions("accept-no-change")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: sandcastle/\${{ inputs.batch_id }}
+      - name: Record the human Ticket decision
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: accept-no-change
+        run: >-
+          sandcastle-queue workflow-host
+          --operation accept-no-change
+          --batch-id "\${{ inputs.batch_id }}"
+          --ticket "\${{ inputs.ticket }}"
+          --config .sandcastle/config.json
+          --expected-head "\${{ inputs.expected_head }}"
+          --reason "\${{ inputs.reason }}"
+
+  complete-no-change:
+    if: \${{ inputs.operation == 'complete-no-change' }}
+    name: Complete a no-change Batch after human confirmation
+    runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
+    permissions:
+${workflowPermissions("complete-no-change")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: sandcastle/\${{ inputs.batch_id }}
+      - name: Record the human Batch decision
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: complete-no-change
+        run: >-
+          sandcastle-queue workflow-host
+          --operation complete-no-change
+          --batch-id "\${{ inputs.batch_id }}"
+          --config .sandcastle/config.json
+          --expected-head "\${{ inputs.expected_head }}"
+          --reason "\${{ inputs.reason }}"
+
+  finalize-batch:
+    if: \${{ inputs.operation == 'finalize-batch' }}
+    name: Release a merged Batch
+    runs-on: ubuntu-24.04
+    container:
+      image: ${controlPlaneImage}
+    permissions:
+${workflowPermissions("finalize-batch")}
+    steps:
+      - name: Check out the fixed host workspace
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Finalize the merged Batch
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_OPERATION: finalize-batch
+        run: >-
+          sandcastle-queue workflow-host
+          --operation finalize-batch
+          --batch-id "\${{ inputs.batch_id }}"
+          --expected-head "\${{ inputs.expected_head }}"
+          --pull-request "\${{ inputs.pull_request }}"
 
   remote-doctor:
     if: \${{ inputs.operation == 'remote-doctor' }}
@@ -278,6 +377,7 @@ ${workflowPermissions("remote-doctor")}
           ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_CONTROL_PLANE_IMAGE: ${controlPlaneImage}
           SANDCASTLE_OPERATION: remote-doctor
         run: >-
           sandcastle-queue workflow-host

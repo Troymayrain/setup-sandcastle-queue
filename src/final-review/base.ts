@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 
 import { InfrastructureError } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { hasExactShape, isRecord } from "../json.js";
 import { checkProtectedPaths } from "../sandbox/policy.js";
 import type { FinalReviewDispatchInput } from "./run.js";
 
 const batchIdPattern = /^p[1-9][0-9]*-[a-f0-9]{12}-r[1-9][0-9]*$/u;
-const gitShaPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const gitRefPattern = /^refs\/(?:heads|remotes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -97,24 +99,12 @@ function infrastructureError(code: string, message: string): InfrastructureError
   return new InfrastructureError([{ code, message }]);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
-}
-
 function validDispatchInput(input: FinalReviewDispatchInput): boolean {
   return (
     isRecord(input) &&
     batchIdPattern.test(input.batchId) &&
-    gitShaPattern.test(input.batchHead) &&
-    gitShaPattern.test(input.targetBase) &&
+    isGitObjectId(input.batchHead) &&
+    isGitObjectId(input.targetBase) &&
     Number.isSafeInteger(input.pullRequest) &&
     input.pullRequest > 0
   );
@@ -169,6 +159,7 @@ function git(
       {
         cwd: repositoryPath,
         encoding: "utf8",
+        env: createHostGitEnvironment(),
         maxBuffer: 16 * 1024 * 1024,
         timeout: 30_000,
       },
@@ -193,7 +184,7 @@ async function resolveCommit(repositoryPath: string, ref: string): Promise<strin
   const head = (
     await git(repositoryPath, ["rev-parse", "--verify", `${ref}^{commit}`])
   ).stdout.trim();
-  if (!gitShaPattern.test(head)) {
+  if (!isGitObjectId(head)) {
     throw infrastructureError(
       "FINAL_REVIEW_REF_INVALID",
       "A final review ref does not resolve to a complete commit.",
@@ -410,7 +401,7 @@ export async function acceptHumanBaseMerge(
   if (
     !hasExactShape(input, ["auditEventId", "head"]) ||
     !uuidPattern.test(input.auditEventId) ||
-    !gitShaPattern.test(input.head) ||
+    !isGitObjectId(input.head) ||
     progress.history.some(
       (event) =>
         event.kind === "human-base-merge" &&

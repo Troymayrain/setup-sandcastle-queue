@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { ConfigurationError, InfrastructureError, readProjectConfig } from "../config.js";
 import { resolveGitHubRepository } from "../github/configure.js";
 import { parseParentMembership } from "../github/frontier.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
 import {
   parseTicketPublicationRecord,
   type TicketPublicationRecord,
@@ -94,8 +99,9 @@ class BatchRunGitHubClient {
       );
     }
     try {
+      const source = await readBoundedGitHubResponseText(response);
       return {
-        data: (await response.json()) as T,
+        data: JSON.parse(source) as T,
         headers: response.headers,
       };
     } catch {
@@ -144,16 +150,6 @@ function infrastructureError(code: string, message: string): InfrastructureError
   return new InfrastructureError([{ code, message }]);
 }
 
-function validSha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
-}
-
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
-  );
-}
-
 function clientFor(environment: NodeJS.ProcessEnv): BatchRunGitHubClient {
   const token = environment.GITHUB_TOKEN;
   if (!token) {
@@ -200,7 +196,7 @@ async function listIssueNumbers(
         .filter(({ pull_request: pullRequest }) => pullRequest === undefined)
         .map(({ number }) => number as number),
     );
-    if (!hasNextPage(response.headers)) return [...new Set(numbers)];
+    if (!hasNextGitHubPage(response.headers)) return [...new Set(numbers)];
   }
   throw infrastructureError(
     "GITHUB_API_INVALID_RESPONSE",
@@ -278,7 +274,7 @@ async function readTicketRecords(
       if (candidate) records.candidates.push(candidate);
       if (acceptance) records.acceptances.push(acceptance);
     }
-    if (!hasNextPage(response.headers)) return records;
+    if (!hasNextGitHubPage(response.headers)) return records;
   }
   throw infrastructureError(
     "GITHUB_API_INVALID_RESPONSE",
@@ -296,10 +292,10 @@ function trailerValues(message: string, name: string): string[] {
 
 function commitFact(commit: GitHubCommit): PublishedCommitFact | null {
   if (
-    !validSha(commit.sha) ||
+    !isGitObjectId(commit.sha) ||
     typeof commit.commit?.message !== "string" ||
     !Array.isArray(commit.parents) ||
-    !commit.parents.every(({ sha }) => validSha(sha))
+    !commit.parents.every(({ sha }) => isGitObjectId(sha))
   ) {
     throw infrastructureError(
       "GITHUB_API_INVALID_RESPONSE",
@@ -361,7 +357,7 @@ async function readBatchHistory(
       }
       if (
         commit.parents?.length !== 1 ||
-        !validSha(commit.parents[0]?.sha) ||
+        !isGitObjectId(commit.parents[0]?.sha) ||
         [...commits.values()].some(({ ticket }) => ticket === fact.ticket)
       ) {
         throw configurationError(
@@ -372,7 +368,7 @@ async function readBatchHistory(
       commits.set(fact.sha, fact);
       expected = commit.parents[0].sha as string;
     }
-    if (!hasNextPage(response.headers)) break;
+    if (!hasNextGitHubPage(response.headers)) break;
   }
   throw configurationError(
     "BATCH_HISTORY_INVALID",
@@ -501,7 +497,7 @@ export async function readBatchRunState(
   const startedAt = initialRun.data?.created_at;
   if (
     typeof defaultBranch !== "string" ||
-    !validSha(remoteHead) ||
+    !isGitObjectId(remoteHead) ||
     activeHead !== remoteHead ||
     initialRun.data?.id !== Number(initialRunId) ||
     initialRun.data?.repository?.full_name !== repository ||

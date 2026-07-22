@@ -18,7 +18,10 @@ test("maintainer documentation covers setup, domain states, security, adapters, 
   assert.match(readme, /Quickstart/u);
   assert.match(readme, /OPERATIONS\.md/u);
   assert.match(corpus, /workflow-host/u);
-  assert.match(corpus, /尚未实现/u);
+  assert.doesNotMatch(corpus, /workflow-host[^。\n]*尚未实现/u);
+  assert.match(corpus, /远端[^。\n]*(?:尚无|尚未取得)/u);
+  assert.match(corpus, /accept-no-change/u);
+  assert.match(corpus, /complete-no-change/u);
 
   for (const term of [
     "pending",

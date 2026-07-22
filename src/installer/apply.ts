@@ -19,11 +19,14 @@ import {
   validateProjectConfig,
 } from "../config.js";
 import { sha256 } from "../hash.js";
+import { isRecord, readBoundedJsonFile } from "../json.js";
+import {
+  resolveRepositoryGitPath,
+  resolveRepositoryRoot,
+} from "../git/repository.js";
 import { VERSION } from "../version.js";
 import {
   readAssetPrecondition,
-  resolveRepositoryGitPath,
-  resolveRepositoryRoot,
   type AssetPrecondition,
   type InstallPlan,
   type UpgradePlanMetadata,
@@ -34,6 +37,10 @@ import {
   TEMPLATE_VERSION,
   type CandidateAsset,
 } from "./templates.js";
+import {
+  assertSafeRepositoryParents,
+  resolveSafeRepositoryTarget,
+} from "./safe-path.js";
 
 export interface InstallResult {
   changed: boolean;
@@ -50,10 +57,6 @@ interface AppliedEntry {
 
 function planError(code: string, message: string): ConfigurationError {
   return new ConfigurationError([{ code, message, path: "" }]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function planWithoutHash(plan: Record<string, unknown>): Record<string, unknown> {
@@ -329,10 +332,8 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
 }
 
 export async function readInstallPlan(path: string): Promise<InstallPlan> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, 4 * 1024 * 1024);
+  if (!result.ok && result.reason !== "invalid-json") {
     throw new InfrastructureError([
       {
         code: "PLAN_READ_FAILED",
@@ -341,14 +342,11 @@ export async function readInstallPlan(path: string): Promise<InstallPlan> {
     ]);
   }
 
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(source);
-  } catch {
+  if (!result.ok) {
     throw planError("PLAN_INVALID_JSON", "Confirmed installation plan is not valid JSON.");
   }
-  assertPlanEnvelope(candidate);
-  return candidate;
+  assertPlanEnvelope(result.value);
+  return result.value;
 }
 
 function preconditionsMatch(
@@ -367,24 +365,50 @@ async function ensureParentDirectories(
   repositoryRoot: string,
   createdDirectories: string[],
 ): Promise<void> {
-  const missing: string[] = [];
-  let cursor = dirname(target);
-  while (cursor !== repositoryRoot) {
+  const relativeParent = relative(repositoryRoot, dirname(target));
+  let cursor = repositoryRoot;
+  for (const segment of relativeParent.split(sep).filter(Boolean)) {
+    cursor = join(cursor, segment);
     try {
-      await lstat(cursor);
-      break;
+      const metadata = await lstat(cursor);
+      if (metadata.isSymbolicLink()) {
+        throw planError(
+          "INSTALL_PATH_SYMLINK_FORBIDDEN",
+          "Managed installation paths cannot traverse a symbolic-link parent.",
+        );
+      }
+      if (!metadata.isDirectory()) {
+        throw planError(
+          "INSTALL_PATH_PARENT_INVALID",
+          "Managed installation path parents must be directories.",
+        );
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      missing.push(cursor);
-      cursor = dirname(cursor);
+      try {
+        await mkdir(cursor, { mode: 0o755 });
+        createdDirectories.push(cursor);
+      } catch (mkdirError) {
+        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw mkdirError;
+        }
+        const metadata = await lstat(cursor);
+        if (metadata.isSymbolicLink()) {
+          throw planError(
+            "INSTALL_PATH_SYMLINK_FORBIDDEN",
+            "Managed installation paths cannot traverse a symbolic-link parent.",
+          );
+        }
+        if (!metadata.isDirectory()) {
+          throw planError(
+            "INSTALL_PATH_PARENT_INVALID",
+            "Managed installation path parents must be directories.",
+          );
+        }
+      }
     }
-  }
-
-  for (const directory of missing.reverse()) {
-    await mkdir(directory, { mode: 0o755 });
-    createdDirectories.push(directory);
   }
 }
 
@@ -418,15 +442,7 @@ async function rollbackAppliedEntries(
 }
 
 function assertSafeAssetPath(repositoryRoot: string, assetPath: string): void {
-  const resolved = join(repositoryRoot, assetPath);
-  const relativePath = relative(repositoryRoot, resolved);
-  if (
-    relativePath === "" ||
-    relativePath === ".." ||
-    relativePath.startsWith(`..${sep}`)
-  ) {
-    throw planError("PLAN_INVALID", "Confirmed plan contains an unsafe asset path.");
-  }
+  resolveSafeRepositoryTarget(repositoryRoot, assetPath);
 }
 
 async function applyCandidateAssets(
@@ -482,10 +498,14 @@ async function applyCandidateAssets(
 
     for (const asset of changedAssets) {
       assertSafeAssetPath(repositoryRoot, asset.path);
-      const target = join(repositoryRoot, asset.path);
+      const target = await assertSafeRepositoryParents(
+        repositoryRoot,
+        asset.path,
+      );
       const staged = join(stagedRoot, asset.path);
       const backup = join(backupRoot, asset.path);
       await ensureParentDirectories(target, repositoryRoot, createdDirectories);
+      await assertSafeRepositoryParents(repositoryRoot, asset.path);
       const current = await readAssetPrecondition(repositoryRoot, asset);
       const expected = expectedPreconditions.find(({ path }) => path === asset.path);
       if (expected === undefined || !preconditionsMatch(expected, current)) {

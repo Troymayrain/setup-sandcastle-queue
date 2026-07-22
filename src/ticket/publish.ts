@@ -1,11 +1,17 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 
 import type { BatchMetadata } from "../batch/start.js";
 import { canonicalJson } from "../canonical-json.js";
 import { ConfigurationError, InfrastructureError } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
 import { resolveGitHubRepository } from "../github/configure.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { readBoundedJsonFile } from "../json.js";
 import { checkProtectedPaths } from "../sandbox/policy.js";
 import type { TicketProcessingResult } from "./process.js";
 
@@ -153,7 +159,7 @@ class PublicationGitHubClient {
         `GitHub Ticket publication ${method} failed with status ${response.status}.`,
       );
     }
-    const source = await response.text();
+    const source = await readBoundedGitHubResponseText(response);
     if (!source) {
       return { data: null, headers: response.headers, status: response.status };
     }
@@ -192,10 +198,6 @@ function infrastructureError(code: string, message: string): InfrastructureError
   return new InfrastructureError([{ code, message }]);
 }
 
-function validSha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
-}
-
 function validHash(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 }
@@ -229,7 +231,7 @@ function validateInputs(options: PublishTicketOptions): void {
     batch.state !== "processing" ||
     !Number.isSafeInteger(batch.parent) ||
     batch.parent <= 0 ||
-    !validSha(batch.originalBaseSha) ||
+    !isGitObjectId(batch.originalBaseSha) ||
     !/^[1-9][0-9]*$/u.test(batch.initialRunId) ||
     batch.id !==
       `p${batch.parent}-${batch.originalBaseSha.slice(0, 12)}-r${batch.initialRunId}` ||
@@ -253,8 +255,8 @@ function validateInputs(options: PublishTicketOptions): void {
     !Number.isSafeInteger(processing.ticket) ||
     processing.ticket <= 0 ||
     !batch.verifiedTickets.includes(processing.ticket) ||
-    !validSha(processing.beforeHead) ||
-    !validSha(processing.head) ||
+    !isGitObjectId(processing.beforeHead) ||
+    !isGitObjectId(processing.head) ||
     !validSessionId(processing.sessionId) ||
     !Array.isArray(processing.findings) ||
     processing.findings.length !== 0 ||
@@ -269,29 +271,26 @@ function validateInputs(options: PublishTicketOptions): void {
 }
 
 async function readJson(path: string): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, 1024 * 1024);
+  if (!result.ok && result.reason === "unavailable") {
     throw configurationError(
       "PUBLICATION_INPUT_INVALID",
       "Unable to read a Ticket publication input file.",
     );
   }
-  if (source.length > 1024 * 1024) {
+  if (!result.ok && result.reason === "too-large") {
     throw configurationError(
       "PUBLICATION_INPUT_INVALID",
       "Ticket publication input exceeds the supported size.",
     );
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw configurationError(
       "PUBLICATION_INPUT_INVALID",
       "Ticket publication input is not valid JSON.",
     );
   }
+  return result.value;
 }
 
 export async function readTicketPublicationInputs(
@@ -313,7 +312,11 @@ export async function readTicketPublicationInputs(
 function git(
   repository: string,
   arguments_: string[],
-  options: { allowFailure?: boolean; environment?: NodeJS.ProcessEnv } = {},
+  options: {
+    allowFailure?: boolean;
+    authenticated?: boolean;
+    environment?: NodeJS.ProcessEnv;
+  } = {},
 ): Promise<{ exitCode: number; stdout: string }> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -322,7 +325,9 @@ function git(
       {
         cwd: repository,
         encoding: "utf8",
-        env: options.environment,
+        env: options.authenticated
+          ? pushGitEnvironment(options.environment ?? process.env)
+          : createHostGitEnvironment(options.environment),
         maxBuffer: 32 * 1024 * 1024,
         timeout: 30_000,
       },
@@ -343,6 +348,22 @@ function git(
   });
 }
 
+function pushGitEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const token = environment.GITHUB_TOKEN;
+  if (!token) {
+    throw configurationError(
+      "GITHUB_TOKEN_MISSING",
+      "GITHUB_TOKEN is required to publish a Ticket.",
+    );
+  }
+  return createHostGitEnvironment(environment, [
+    [
+      "http.https://github.com/.extraheader",
+      `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+    ],
+  ]);
+}
+
 function gitWithInput(
   repository: string,
   arguments_: string[],
@@ -352,7 +373,7 @@ function gitWithInput(
   return new Promise((resolve, reject) => {
     const child = spawn("git", arguments_, {
       cwd: repository,
-      env: environment,
+      env: createHostGitEnvironment(environment),
       stdio: ["pipe", "pipe", "ignore"],
     });
     let stdout = "";
@@ -382,10 +403,54 @@ function gitWithInput(
   });
 }
 
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
-  );
+function nulPaths(source: string): string[] {
+  return source.split("\u0000").filter(Boolean);
+}
+
+async function assertNoHostGitFilters(
+  repository: string,
+  beforeHead: string,
+): Promise<void> {
+  const [tracked, untracked] = await Promise.all([
+    git(repository, [
+      "diff",
+      "--name-only",
+      "--no-ext-diff",
+      "--no-renames",
+      "--no-textconv",
+      "-z",
+      beforeHead,
+      "--",
+    ]),
+    git(repository, ["ls-files", "--others", "--exclude-standard", "-z", "--"]),
+  ]);
+  const changedPaths = [...new Set([
+    ...nulPaths(tracked.stdout),
+    ...nulPaths(untracked.stdout),
+  ])];
+  if (changedPaths.length === 0) return;
+  const attributes = await git(repository, [
+    "check-attr",
+    "-z",
+    "filter",
+    "--",
+    ...changedPaths,
+  ]);
+  const fields = nulPaths(attributes.stdout);
+  for (let index = 0; index < fields.length; index += 3) {
+    const path = fields[index] ?? "";
+    const value = fields[index + 2] ?? "";
+    if (value !== "unspecified" && value !== "unset") {
+      throw new ConfigurationError([
+        {
+          code: "HOST_GIT_FILTER_FORBIDDEN",
+          message:
+            "Published paths cannot activate repository Git filters on the credentialed host.",
+          path,
+        },
+      ]);
+    }
+  }
 }
 
 function repositoryName(environment: NodeJS.ProcessEnv): string | undefined {
@@ -484,7 +549,7 @@ function validPublicationRecord(candidate: unknown): candidate is TicketPublicat
         .join("\u0000") &&
     record.schemaVersion === 1 &&
     typeof record.batchId === "string" &&
-    validSha(record.commit) &&
+    isGitObjectId(record.commit) &&
     validPublishedPullRequest(record.pullRequest) &&
     validSessionId(record.sessionId) &&
     Number.isSafeInteger(record.ticket) &&
@@ -614,7 +679,7 @@ async function findBatchPullRequest(
     }
     const match = response.data.find(({ head }) => head?.ref === branch);
     if (match) return match;
-    if (!hasNextPage(response.headers)) return undefined;
+    if (!hasNextGitHubPage(response.headers)) return undefined;
   }
 }
 
@@ -700,8 +765,7 @@ export async function publishTicket(
   const currentHead = head.trim();
   if (
     currentBranch !== options.batch.branch ||
-    currentHead !== options.processing.head ||
-    options.processing.beforeHead === currentHead
+    currentHead !== options.processing.head
   ) {
     throw configurationError(
       "TICKET_PUBLICATION_STATE_MISMATCH",
@@ -720,6 +784,7 @@ export async function publishTicket(
     );
   }
   await checkProtectedPaths(root, options.processing.beforeHead);
+  await assertNoHostGitFilters(root, options.processing.beforeHead);
 
   const [repositoryMetadata, issueResponse] = await Promise.all([
     client.get<{ default_branch?: string }>(`/repos/${repository}`),
@@ -774,7 +839,7 @@ export async function publishTicket(
       GIT_COMMITTER_NAME: "Sandcastle Queue",
     },
   );
-  if (!validSha(publishedCommit)) {
+  if (!isGitObjectId(publishedCommit)) {
     throw infrastructureError(
       "TICKET_COMMIT_FAILED",
       "Git did not return a valid Published Commit identity.",
@@ -797,7 +862,7 @@ export async function publishTicket(
       `${publishedCommit}:refs/heads/${options.batch.branch}`,
       `${publishedCommit}:refs/heads/sandcastle/active`,
     ],
-    { allowFailure: true, environment },
+    { allowFailure: true, authenticated: true, environment },
   );
   if (push.exitCode !== 0) {
     throw infrastructureError(
@@ -863,11 +928,11 @@ function validGitHubCommit(candidate: unknown): candidate is Required<GitHubComm
   }
   const commit = candidate as GitHubCommit;
   return (
-    validSha(commit.sha) &&
+    isGitObjectId(commit.sha) &&
     commit.commit !== undefined &&
     typeof commit.commit.message === "string" &&
     Array.isArray(commit.parents) &&
-    commit.parents.every(({ sha }) => validSha(sha))
+    commit.parents.every(({ sha }) => isGitObjectId(sha))
   );
 }
 
@@ -892,7 +957,7 @@ async function readReachableCommits(
       commits.push(commit as Required<GitHubCommit>);
       if (commit.sha === beforeHead) return commits;
     }
-    if (!hasNextPage(response.headers)) break;
+    if (!hasNextGitHubPage(response.headers)) break;
   }
   throw configurationError(
     "REMOTE_HISTORY_UNEXPECTED",
@@ -991,7 +1056,7 @@ async function listPublicationRecords(
       const record = parseTicketPublicationRecord(comment.body as string);
       if (record) records.push(record);
     }
-    if (!hasNextPage(response.headers)) return records;
+    if (!hasNextGitHubPage(response.headers)) return records;
   }
   throw infrastructureError(
     "GITHUB_API_INVALID_RESPONSE",
@@ -1032,7 +1097,7 @@ export async function reconcileTicketPublication(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<TicketPublicationPendingResult | TicketReconciliationResult> {
   validateInputs(options);
-  if (options.expectedHead !== undefined && !validSha(options.expectedHead)) {
+  if (options.expectedHead !== undefined && !isGitObjectId(options.expectedHead)) {
     throw configurationError(
       "EXPECTED_HEAD_INVALID",
       "Ticket reconciliation expected HEAD must be a complete commit SHA.",
@@ -1052,7 +1117,7 @@ export async function reconcileTicketPublication(
     ),
   ]);
   const remoteHead = remoteResponse.data?.object?.sha;
-  if (!validSha(remoteHead)) {
+  if (!isGitObjectId(remoteHead)) {
     throw infrastructureError(
       "GITHUB_API_INVALID_RESPONSE",
       "GitHub omitted a valid remote Batch HEAD.",

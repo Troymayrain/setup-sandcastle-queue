@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 import { canonicalJson } from "../canonical-json.js";
 import {
@@ -20,7 +20,12 @@ import {
   ConfigurationError,
   type ProjectConfig,
 } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
 import { sha256 } from "../hash.js";
+import {
+  resolveRepositoryGitPath,
+  resolveRepositoryRoot,
+} from "../git/repository.js";
 import { VERSION } from "../version.js";
 import {
   renderCandidateAssets,
@@ -29,6 +34,7 @@ import {
   type AssetOwnership,
   type CandidateAsset,
 } from "./templates.js";
+import { assertSafeRepositoryParents } from "./safe-path.js";
 
 export type InstallationState = "fresh" | "managed" | "unmanaged";
 
@@ -125,6 +131,7 @@ function runCommand(
   executable: string,
   args: string[],
   cwd: string,
+  environment?: NodeJS.ProcessEnv,
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -133,6 +140,7 @@ function runCommand(
       {
         cwd,
         encoding: "utf8",
+        env: environment,
         maxBuffer: 16 * 1024 * 1024,
         timeout: 10_000,
       },
@@ -158,7 +166,12 @@ async function git(
 ): Promise<string> {
   let result: CommandResult;
   try {
-    result = await runCommand("git", args, repository);
+    result = await runCommand(
+      "git",
+      args,
+      repository,
+      createHostGitEnvironment(),
+    );
   } catch {
     throw new InfrastructureError([
       { code: "GIT_FAILED", message: "Unable to inspect the target Git repository." },
@@ -172,21 +185,6 @@ async function git(
   }
 
   return result.stdout;
-}
-
-export async function resolveRepositoryRoot(repository: string): Promise<string> {
-  return (await git(repository, ["rev-parse", "--show-toplevel"])).trim();
-}
-
-export async function resolveRepositoryGitPath(
-  repository: string,
-  relativePath: string,
-): Promise<string> {
-  const root = await resolveRepositoryRoot(repository);
-  const gitPath = (
-    await git(root, ["rev-parse", "--git-path", relativePath])
-  ).trim();
-  return isAbsolute(gitPath) ? gitPath : resolve(root, gitPath);
 }
 
 async function pendingPlanPath(repository: string): Promise<string> {
@@ -209,7 +207,11 @@ async function determineInstallationState(
   repository: string,
   assets: CandidateAsset[],
 ): Promise<InstallationState> {
-  if (await pathExists(join(repository, ".sandcastle/installation.json"))) {
+  const installationStatePath = await assertSafeRepositoryParents(
+    repository,
+    ".sandcastle/installation.json",
+  );
+  if (await pathExists(installationStatePath)) {
     return "managed";
   }
 
@@ -225,7 +227,7 @@ export async function readAssetPrecondition(
   repository: string,
   asset: CandidateAsset,
 ): Promise<AssetPrecondition> {
-  const target = join(repository, asset.path);
+  const target = await assertSafeRepositoryParents(repository, asset.path);
   if (!(await pathExists(target))) {
     return { path: asset.path, sha256: null, type: "absent" };
   }
@@ -264,7 +266,7 @@ async function writeBaseTree(
 ): Promise<void> {
   await Promise.all(
     assets.map(async (asset) => {
-      const source = join(repository, asset.path);
+      const source = await assertSafeRepositoryParents(repository, asset.path);
       if (!(await pathExists(source))) {
         return;
       }
@@ -448,6 +450,7 @@ async function renderPatch(
         "candidate",
       ],
       temporaryRoot,
+      createHostGitEnvironment(),
     );
     if (result.code !== 0 && result.code !== 1) {
       throw new InfrastructureError([

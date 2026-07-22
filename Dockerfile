@@ -39,21 +39,40 @@ RUN printf '%s\n' \
       gh=2.23.0+dfsg1-1 \
       git=1:2.39.5-0+deb12u3 \
       jq=1.6-2.1+deb12u2 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f \
+      /var/cache/ldconfig/aux-cache \
+      /var/log/alternatives.log \
+      /var/log/apt/history.log \
+      /var/log/apt/term.log \
+      /var/log/dpkg.log
 
 WORKDIR /opt/control-plane-dependencies
 COPY control-plane/package.json control-plane/package-lock.json ./
 RUN npm ci --omit=dev \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && rm -rf /root/.npm /tmp/*
 
 WORKDIR /opt/sandcastle
 COPY control-plane/runtime-package.json ./package.json
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 COPY schema ./schema
-COPY --from=build /opt/source/dist/control-plane.js ./dist/control-plane.js
-COPY --from=build /opt/source/dist/broker/server.js ./dist/broker/server.js
+COPY --from=build /opt/source/dist/agent ./dist/agent
+COPY --from=build /opt/source/dist/audit ./dist/audit
+COPY --from=build /opt/source/dist/batch ./dist/batch
+COPY --from=build /opt/source/dist/broker ./dist/broker
+COPY --from=build /opt/source/dist/final-review ./dist/final-review
+COPY --from=build /opt/source/dist/git ./dist/git
+COPY --from=build /opt/source/dist/github ./dist/github
+COPY --from=build /opt/source/dist/sandbox ./dist/sandbox
+COPY --from=build /opt/source/dist/ticket ./dist/ticket
+COPY --from=build /opt/source/dist/workflow ./dist/workflow
+COPY --from=build /opt/source/dist/canonical-json.js ./dist/canonical-json.js
 COPY --from=build /opt/source/dist/config.js ./dist/config.js
+COPY --from=build /opt/source/dist/control-plane.js ./dist/control-plane.js
 COPY --from=build /opt/source/dist/hash.js ./dist/hash.js
+COPY --from=build /opt/source/dist/json.js ./dist/json.js
+COPY --from=build /opt/source/dist/remote-doctor.js ./dist/remote-doctor.js
 COPY --from=build /opt/source/dist/version.js ./dist/version.js
 RUN mv /opt/control-plane-dependencies/node_modules ./node_modules \
     && chmod 0555 ./dist/control-plane.js \

@@ -11,7 +11,8 @@ import {
   type ProjectConfig,
 } from "./config.js";
 import { sha256 } from "./hash.js";
-import { resolveRepositoryRoot } from "./installer/plan.js";
+import { resolveRepositoryRoot } from "./git/repository.js";
+import { hasExactShape, isRecord } from "./json.js";
 import { VERSION } from "./version.js";
 
 const opaqueIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
@@ -104,18 +105,6 @@ export interface RemoteDoctorResult {
 
 function configurationError(code: string, message: string): ConfigurationError {
   return new ConfigurationError([{ code, message, path: "" }]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function validReceipt(value: unknown): value is RemoteDoctorProbeReceipt {

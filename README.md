@@ -2,7 +2,7 @@
 
 `setup-sandcastle-queue` 把 Sandcastle Queue 的安装、runtime 检测、GitHub 配置、安全边界和运维检查收进同一个版本化工具。它不会替目标仓库执行 `stash`、`reset`、`commit` 或 `push`。安装文件先形成完整 patch，维护者确认同一个 `planHash` 后才会写入。
 
-> 当前源码是尚未发布的 `1.0.0` release candidate。installer、runtime adapters、credentialless CI 和 release-gate 验证器已有自动化覆盖；managed workflow 引用的 `sandcastle-queue workflow-host` 尚未实现，因此真实 Batch Actions 链路目前会 fail closed。不要把当前版本用于生产 Batch，也不要把尚未运行的 live E2E、发布或 dogfood gate 记为成功。
+> 当前源码是尚未发布的 `1.0.0` release candidate。installer、runtime adapters、`workflow-host` dispatcher、credentialless CI 和 release-gate 验证器已有自动化覆盖。远端 Actions Batch、live E2E、dogfood 和正式发布尚无成功证据，不要把本地合同测试记为这些 gate 已通过。
 
 完整配置、安全模型、状态语义和恢复步骤见 [维护者手册](./OPERATIONS.md)。
 
@@ -50,7 +50,7 @@ npm run typecheck
 npm test
 ```
 
-普通 PR CI 使用九类无凭据 fixture、本地 GitHub 与 Anthropic-compatible contract servers，并验证 Docker build/run。Python 与 Java 的真实 live E2E 只允许 maintainer 手动触发，且成功必须来自专用 fixture repositories 的候选 commit 绑定证据。legacy lifecycle 与三票 Batch dogfood 同样是 manual-only gates；它们要求真实项目返回 release、repository state 与 candidate 绑定的脱敏证据。当前仅验证器和 workflow 合同就绪，尚无成功 dogfood run。
+普通 PR CI 使用九类无凭据 fixture、本地 GitHub 与 Anthropic-compatible contract servers，并在候选容器中对只读 fixture 运行 offline doctor。Python 与 Java 的真实 live E2E 只允许 maintainer 手动触发，且成功必须来自专用 fixture repositories 的候选 commit 绑定证据。legacy lifecycle 与三票 Batch dogfood 同样是 manual-only gates；它们要求真实项目返回 release、repository state 与 candidate 绑定的脱敏证据。当前没有成功的远端 live E2E 或 dogfood run。
 
 ## License
 

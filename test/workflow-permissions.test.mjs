@@ -8,11 +8,29 @@ import test from "node:test";
 const cliPath = new URL("../dist/cli.js", import.meta.url);
 
 const expectedPermissions = {
-  abort: {
+  "accept-no-change": {
     actions: "read",
     contents: "read",
     issues: "write",
+    pullRequests: "none",
+  },
+  abort: {
+    actions: "read",
+    contents: "write",
+    issues: "write",
     pullRequests: "write",
+  },
+  "complete-no-change": {
+    actions: "read",
+    contents: "write",
+    issues: "write",
+    pullRequests: "none",
+  },
+  "finalize-batch": {
+    actions: "none",
+    contents: "write",
+    issues: "none",
+    pullRequests: "read",
   },
   "final-fix": {
     actions: "write",
@@ -34,7 +52,7 @@ const expectedPermissions = {
   },
   "review-only": {
     actions: "write",
-    contents: "read",
+    contents: "write",
     issues: "write",
     pullRequests: "write",
   },
@@ -164,6 +182,16 @@ test("workflow capability guard allows only host operations and never retries wi
       capability: "read-issue",
       operation: "remote-doctor",
     },
+    {
+      boundary: "host",
+      capability: "release-batch",
+      operation: "review-only",
+    },
+    {
+      boundary: "host",
+      capability: "advance-batch",
+      operation: "abort",
+    },
     { boundary: "sandbox", capability: "push", operation: "process" },
     {
       boundary: "sandbox",
@@ -186,7 +214,10 @@ test("workflow capability guard allows only host operations and never retries wi
 });
 
 test("installed workflow is manual-only and grants each host job only its contract", async () => {
-  const { isWorkflowSecurityContractSatisfied } = await import("../dist/index.js");
+  const {
+    isWorkflowSecurityContractSatisfied,
+    readWorkflowJobPermissions,
+  } = await import("../dist/index.js");
   const workflow = installedWorkflow();
   const triggerBlock = workflow.slice(
     workflow.indexOf("\non:\n"),
@@ -199,22 +230,35 @@ test("installed workflow is manual-only and grants each host job only its contra
   );
   assert.match(workflow, /\npermissions: \{\}\n\njobs:\n/u);
   for (const operation of [
+    "accept-no-change",
     "process",
     "review-only",
     "final-fix",
     "abort",
+    "complete-no-change",
+    "finalize-batch",
     "remote-doctor",
   ]) {
     const block = jobBlock(workflow, operation);
     assert.deepEqual(jobPermissions(block), expectedPermissions[operation]);
+    assert.deepEqual(
+      readWorkflowJobPermissions(workflow, operation),
+      expectedPermissions[operation],
+    );
     assert.match(block, /persist-credentials: false/u);
     assert.match(block, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/u);
     assert.doesNotMatch(block, /env:\n(?:      .+\n)*      ANTHROPIC_AUTH_TOKEN:/u);
   }
   assert.match(
     workflow,
-    /options:\n(?:          - (?:start|continue|resume|review-only|final-fix|abort|remote-doctor)\n){7}/u,
+    /options:\n(?:          - (?:start|continue|resume|review-only|final-fix|abort|accept-no-change|complete-no-change|finalize-batch|remote-doctor)\n){10}/u,
   );
+  const processJob = jobBlock(workflow, "process");
+  assert.match(processJob, /SANDCASTLE_CONTROL_PLANE_IMAGE:/u);
+  assert.match(processJob, /--mode "\$\{\{ inputs\.operation \}\}"/u);
+  assert.match(processJob, /ref: sandcastle\/\$\{\{/u);
+  const remoteDoctor = jobBlock(workflow, "remote-doctor");
+  assert.match(remoteDoctor, /SANDCASTLE_CONTROL_PLANE_IMAGE:/u);
   assert.equal(isWorkflowSecurityContractSatisfied(workflow), true);
   assert.equal(
     isWorkflowSecurityContractSatisfied(
@@ -226,11 +270,32 @@ test("installed workflow is manual-only and grants each host job only its contra
     false,
   );
   const reviewOnly = jobBlock(workflow, "review-only");
+  assert.match(reviewOnly, /fetch-depth: 0/u);
+  assert.match(reviewOnly, /ref: sandcastle\/\$\{\{ inputs\.batch_id \}\}/u);
+  assert.match(reviewOnly, /SANDCASTLE_CONTROL_PLANE_IMAGE:/u);
+  const finalFix = jobBlock(workflow, "final-fix");
+  assert.match(finalFix, /fetch-depth: 0/u);
+  assert.match(finalFix, /ref: sandcastle\/\$\{\{ inputs\.batch_id \}\}/u);
+  assert.match(finalFix, /SANDCASTLE_CONTROL_PLANE_IMAGE:/u);
+  const abort = jobBlock(workflow, "abort");
+  assert.match(abort, /--config \.sandcastle\/config\.json/u);
+  assert.match(abort, /SANDCASTLE_CONTROL_PLANE_IMAGE:/u);
+  const acceptNoChange = jobBlock(workflow, "accept-no-change");
+  assert.match(acceptNoChange, /--ticket "\$\{\{ inputs\.ticket \}\}"/u);
+  assert.match(acceptNoChange, /--reason "\$\{\{ inputs\.reason \}\}"/u);
+  const completeNoChange = jobBlock(workflow, "complete-no-change");
+  assert.match(completeNoChange, /--reason "\$\{\{ inputs\.reason \}\}"/u);
+  assert.doesNotMatch(completeNoChange, /--ticket/u);
+  const finalizeBatch = jobBlock(workflow, "finalize-batch");
+  assert.match(finalizeBatch, /--operation finalize-batch/u);
+  assert.match(finalizeBatch, /--expected-head "\$\{\{ inputs\.expected_head \}\}"/u);
+  assert.match(finalizeBatch, /--pull-request "\$\{\{ inputs\.pull_request \}\}"/u);
+  assert.doesNotMatch(finalizeBatch, /--reason|ANTHROPIC_/u);
   assert.equal(
     isWorkflowSecurityContractSatisfied(
       workflow.replace(
         reviewOnly,
-        reviewOnly.replace("      contents: read", "      contents: write"),
+        reviewOnly.replace("      contents: write", "      contents: read"),
       ),
     ),
     false,
@@ -255,7 +320,7 @@ test("installed workflow is manual-only and grants each host job only its contra
   );
 });
 
-test("an unavailable workflow host dispatcher fails closed", () => {
+test("workflow host is a real command and rejects execution outside its Actions job", () => {
   const dispatched = spawnSync(
     process.execPath,
     [cliPath.pathname, "workflow-host", "--operation", "process"],
@@ -263,14 +328,15 @@ test("an unavailable workflow host dispatcher fails closed", () => {
   );
 
   assert.equal(dispatched.status, 2, dispatched.stderr);
-  assert.deepEqual(JSON.parse(dispatched.stdout), {
+  const output = JSON.parse(dispatched.stdout);
+  assert.deepEqual(output, {
     category: "configuration",
     code: "CONFIG_INVALID",
     command: "workflow-host",
     diagnostics: [
       {
-        code: "CLI_COMMAND_UNKNOWN",
-        message: "Unknown sandcastle-queue command.",
+        code: "WORKFLOW_HOST_CONTEXT_INVALID",
+        message: "The workflow host runs only inside its matching manual GitHub Actions job.",
         path: "",
       },
     ],

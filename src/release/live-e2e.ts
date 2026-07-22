@@ -1,6 +1,9 @@
-import { readFile } from "node:fs/promises";
-
 import { ConfigurationError } from "../config.js";
+import {
+  hasExactShape,
+  isRecord,
+  readBoundedJsonFile,
+} from "../json.js";
 
 const sha1Pattern = /^[a-f0-9]{40}$/u;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
@@ -85,21 +88,6 @@ export interface LiveE2EReleaseGateResult {
   gateId: string | null;
   ok: boolean;
   schemaVersion: 1;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function positiveInteger(value: unknown): value is number {
@@ -372,10 +360,8 @@ export function evaluateLiveE2EReleaseGate(
 export async function readLiveE2EReleaseGateInput(
   path: string,
 ): Promise<unknown> {
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(path, maximumInputBytes);
+  if (!result.ok && result.reason === "unavailable") {
     throw new ConfigurationError([
       {
         code: "LIVE_E2E_INPUT_UNAVAILABLE",
@@ -384,7 +370,7 @@ export async function readLiveE2EReleaseGateInput(
       },
     ]);
   }
-  if (Buffer.byteLength(source, "utf8") > maximumInputBytes) {
+  if (!result.ok && result.reason === "too-large") {
     throw new ConfigurationError([
       {
         code: "LIVE_E2E_INPUT_TOO_LARGE",
@@ -393,9 +379,7 @@ export async function readLiveE2EReleaseGateInput(
       },
     ]);
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code: "LIVE_E2E_INPUT_INVALID_JSON",
@@ -404,4 +388,5 @@ export async function readLiveE2EReleaseGateInput(
       },
     ]);
   }
+  return result.value;
 }

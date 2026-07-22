@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -228,4 +235,79 @@ test("human final fixes are rejected outside recovery states and on protected pa
     ),
     (error) => error.diagnostics?.[0]?.code === "PROTECTED_PATH_MODIFIED",
   );
+});
+
+test("workflow Batch head advancement leases and synchronizes the active ref", async () => {
+  const { advanceWorkflowBatchRefs } = await import(
+    "../dist/workflow/final-review-runtime.js"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "sandcastle-final-ref-push-"));
+  const repository = join(directory, "repository");
+  const binaryDirectory = join(directory, "bin");
+  const logPath = join(directory, "git-arguments.txt");
+  mkdirSync(repository);
+  mkdirSync(binaryDirectory);
+  const executable = join(binaryDirectory, "git");
+  writeFileSync(
+    executable,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${logPath}'\n`,
+  );
+  chmodSync(executable, 0o755);
+  const beforeHead = "a".repeat(40);
+  const head = "b".repeat(40);
+  const environment = {
+    GITHUB_REPOSITORY: "acme/widget",
+    GITHUB_TOKEN: "test-token",
+    PATH: `${binaryDirectory}:${process.env.PATH ?? ""}`,
+  };
+
+  await advanceWorkflowBatchRefs(repository, {
+    batchId,
+    beforeHead,
+    environment,
+    head,
+    mode: "branch-and-active",
+  });
+  assert.deepEqual(readFileSync(logPath, "utf8").trim().split("\n"), [
+    "push",
+    "--atomic",
+    "--porcelain",
+    `--force-with-lease=refs/heads/sandcastle/${batchId}:${beforeHead}`,
+    `--force-with-lease=refs/heads/sandcastle/active:${beforeHead}`,
+    "https://github.com/acme/widget.git",
+    `${head}:refs/heads/sandcastle/${batchId}`,
+    `${head}:refs/heads/sandcastle/active`,
+  ]);
+
+  await advanceWorkflowBatchRefs(repository, {
+    batchId,
+    beforeHead,
+    environment,
+    head,
+    mode: "active-only",
+    observedActiveHead: beforeHead,
+  });
+  assert.deepEqual(readFileSync(logPath, "utf8").trim().split("\n"), [
+    "push",
+    "--porcelain",
+    `--force-with-lease=refs/heads/sandcastle/active:${beforeHead}`,
+    "https://github.com/acme/widget.git",
+    `${head}:refs/heads/sandcastle/active`,
+  ]);
+
+  writeFileSync(logPath, "sentinel\n");
+  await assert.rejects(
+    advanceWorkflowBatchRefs(repository, {
+      batchId,
+      beforeHead,
+      environment,
+      head,
+      mode: "active-only",
+      observedActiveHead: "c".repeat(40),
+    }),
+    (error) =>
+      error.diagnostics?.[0]?.code === "FINAL_REVIEW_ACTIVE_REF_MISMATCH",
+  );
+  assert.equal(existsSync(logPath), true);
+  assert.equal(readFileSync(logPath, "utf8"), "sentinel\n");
 });

@@ -9,11 +9,13 @@ import {
   readProjectConfig,
   type CommandSpec,
 } from "../config.js";
+import { createHostGitEnvironment } from "../git/environment.js";
+import { isGitObjectId } from "../git/object-id.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { hasExactShape, isRecord } from "../json.js";
 
 const batchIdPattern = /^p([1-9][0-9]*)-[a-f0-9]{12}-r[1-9][0-9]*$/u;
-const gitShaPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const sessionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const opaqueIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
@@ -166,23 +168,6 @@ function infrastructureError(code: string, message: string): InfrastructureError
   return new InfrastructureError([{ code, message }]);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  required: string[],
-  optional: string[] = [],
-): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => allowed.has(key))
-  );
-}
-
 function validateState(state: FinalReviewState, batchId: string): void {
   const match = batchId.match(batchIdPattern);
   if (
@@ -190,8 +175,8 @@ function validateState(state: FinalReviewState, batchId: string): void {
     !isRecord(state) ||
     state.batchId !== batchId ||
     state.parent !== Number(match[1]) ||
-    !gitShaPattern.test(state.batchHead) ||
-    !gitShaPattern.test(state.targetBase) ||
+    !isGitObjectId(state.batchHead) ||
+    !isGitObjectId(state.targetBase) ||
     state.pullRequest === null ||
     typeof state.pullRequest !== "object" ||
     state.pullRequest.draft !== true ||
@@ -256,8 +241,8 @@ function validateSpecification(
 function validateOptions(options: FinalReviewOptions): void {
   if (
     !batchIdPattern.test(options.batchId) ||
-    !gitShaPattern.test(options.batchHead) ||
-    !gitShaPattern.test(options.targetBase) ||
+    !isGitObjectId(options.batchHead) ||
+    !isGitObjectId(options.targetBase) ||
     !Number.isSafeInteger(options.pullRequest) ||
     options.pullRequest <= 0 ||
     typeof options.configPath !== "string" ||
@@ -300,7 +285,10 @@ function command(
       {
         cwd,
         encoding: "utf8",
-        env: options.environment,
+        env:
+          executable === "git"
+            ? createHostGitEnvironment(options.environment)
+            : options.environment,
         maxBuffer: 32 * 1024 * 1024,
         timeout: options.timeout ?? 30_000,
       },
@@ -333,7 +321,7 @@ function commitMergeTree(
       ["commit-tree", tree, "-p", targetBase, "-p", batchHead],
       {
         cwd: workspacePath,
-        env: {
+        env: createHostGitEnvironment({
           ...process.env,
           GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
           GIT_AUTHOR_EMAIL: "sandcastle@example.invalid",
@@ -341,7 +329,7 @@ function commitMergeTree(
           GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
           GIT_COMMITTER_EMAIL: "sandcastle@example.invalid",
           GIT_COMMITTER_NAME: "Sandcastle Final Review",
-        },
+        }),
         stdio: ["pipe", "pipe", "ignore"],
       },
     );
@@ -358,7 +346,7 @@ function commitMergeTree(
     );
     child.on("close", (status) => {
       const reviewedHead = stdout.trim();
-      if (status !== 0 || !gitShaPattern.test(reviewedHead)) {
+      if (status !== 0 || !isGitObjectId(reviewedHead)) {
         reject(
           infrastructureError(
             "FINAL_REVIEW_MERGE_FAILED",
@@ -401,7 +389,7 @@ async function createMergeWorkspace(
       );
     }
     const tree = (await command("git", ["write-tree"], workspacePath)).stdout.trim();
-    if (!gitShaPattern.test(tree)) {
+    if (!isGitObjectId(tree)) {
       throw infrastructureError(
         "FINAL_REVIEW_MERGE_FAILED",
         "Unable to write the temporary final review merge tree.",

@@ -170,9 +170,13 @@ jobs:
           if [[ "$target_object" != "$BASE_SHA" ]]; then
             exit 2
           fi
+          target_ref="$(gh api "repos/${DOGFOOD_REPOSITORY}" --jq .default_branch)"
+          if [[ -z "$target_ref" ]]; then
+            exit 2
+          fi
           gh workflow run sandcastle-batch-dogfood.yml \
             --repo "$DOGFOOD_REPOSITORY" \
-            --ref main \
+            --ref "$target_ref" \
             -f "base_sha=$BASE_SHA" \
             -f "candidate_repository=$CANDIDATE_REPOSITORY" \
             -f "candidate_sha=$CANDIDATE_SHA" \

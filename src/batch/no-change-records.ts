@@ -1,5 +1,6 @@
 import { canonicalJson } from "../canonical-json.js";
 import { ConfigurationError } from "../config.js";
+import { isGitObjectId } from "../git/object-id.js";
 
 const candidatePattern =
   /<!-- sandcastle-ticket-no-change-candidate\n([\s\S]*?)\n-->/u;
@@ -37,10 +38,6 @@ function configurationError(message: string): ConfigurationError {
   return new ConfigurationError([
     { code: "NO_CHANGE_RECORD_INVALID", message, path: "" },
   ]);
-}
-
-function validSha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
 }
 
 function validSessionId(value: unknown): value is string {
@@ -97,7 +94,7 @@ function validCandidate(
     exactKeys(candidate, ["batchId", "head", "schemaVersion", "sessionId", "ticket"]) &&
     record.schemaVersion === 1 &&
     typeof record.batchId === "string" &&
-    validSha(record.head) &&
+    isGitObjectId(record.head) &&
     validSessionId(record.sessionId) &&
     Number.isSafeInteger(record.ticket) &&
     (record.ticket ?? 0) > 0
@@ -141,7 +138,7 @@ export function parseTicketNoChangeAcceptance(
     record.schemaVersion !== 1 ||
     !validActor(record.actor) ||
     typeof record.batchId !== "string" ||
-    !validSha(record.head) ||
+    !isGitObjectId(record.head) ||
     !validReason(record.reason) ||
     typeof record.runId !== "string" ||
     !/^[1-9][0-9]*$/u.test(record.runId) ||
@@ -179,7 +176,7 @@ export function parseBatchNoChangeCompletion(
     record.schemaVersion !== 1 ||
     !validActor(record.actor) ||
     typeof record.batchId !== "string" ||
-    !validSha(record.head) ||
+    !isGitObjectId(record.head) ||
     !Number.isSafeInteger(record.parent) ||
     (record.parent ?? 0) <= 0 ||
     !validReason(record.reason) ||

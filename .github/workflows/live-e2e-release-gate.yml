@@ -87,9 +87,13 @@ jobs:
           if [[ ! "$FIXTURE_REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
             exit 2
           fi
+          target_ref="$(gh api "repos/${FIXTURE_REPOSITORY}" --jq .default_branch)"
+          if [[ -z "$target_ref" ]]; then
+            exit 2
+          fi
           gh workflow run sandcastle-live-e2e.yml \
             --repo "$FIXTURE_REPOSITORY" \
-            --ref main \
+            --ref "$target_ref" \
             -f "candidate_repository=$CANDIDATE_REPOSITORY" \
             -f "candidate_sha=$CANDIDATE_SHA" \
             -f "fixture=$FIXTURE" \

@@ -7,7 +7,19 @@ import {
   type CommandSpec,
 } from "../config.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { isRecord } from "../json.js";
+
+const officialMavenDistributionSha256: Readonly<Record<string, string>> =
+  Object.freeze({
+    "3.9.9":
+      "4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c",
+  });
+const officialMavenWrapperSha256: Readonly<Record<string, string>> =
+  Object.freeze({
+    "3.3.4":
+      "cae96cef89ebea3531221f4ae17c23cf8edf67d00eae8306d4186ae1bbed4d02",
+  });
 
 export type BuiltInAdapter =
   | "go-module"
@@ -161,10 +173,6 @@ function environmentInput(path: string, source: string): RuntimeEnvironmentInput
   return { path, sha256: sha256(source) };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function assertValidNpmLock(
   source: string,
   packageName: unknown,
@@ -314,6 +322,10 @@ function exactMavenArtifactVersion(value: string): boolean {
     /^[0-9A-Za-z][0-9A-Za-z._+-]*$/u.test(value) &&
     !value.toUpperCase().includes("SNAPSHOT")
   );
+}
+
+function isOfficialMavenWrapper(source: string): boolean {
+  return Object.values(officialMavenWrapperSha256).includes(sha256(source));
 }
 
 function assertMavenVersionPolicy(source: string): void {
@@ -619,6 +631,21 @@ async function javaProposal(
     throw detectionError(
       "MAVEN_WRAPPER_CHECKSUM_INVALID",
       "The Maven Wrapper distribution requires an exact SHA-256 checksum.",
+    );
+  }
+  if (
+    officialMavenDistributionSha256[distribution[1]] !==
+    distributionChecksum
+  ) {
+    throw detectionError(
+      "MAVEN_WRAPPER_CHECKSUM_INVALID",
+      "The Maven Wrapper checksum must match the supported official distribution.",
+    );
+  }
+  if (!isOfficialMavenWrapper(wrapperSource)) {
+    throw detectionError(
+      "MAVEN_WRAPPER_INVALID",
+      "The Maven Wrapper script must match a supported official checksum-enforcing release.",
     );
   }
   if (

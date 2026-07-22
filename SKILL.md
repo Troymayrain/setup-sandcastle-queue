@@ -7,7 +7,7 @@ description: 在 GitHub 仓库中规划、安装与验证 Sandcastle Queue。用
 
 只通过 `node scripts/setup.mjs` 调用共享 installer core。不要在 skill 中重写模板、配置校验、diff 或文件应用逻辑。
 
-当前源码中的 managed workflow 仍引用尚未实现的 `sandcastle-queue workflow-host`。本 skill 可以完成本地 plan、install、lifecycle preview 和 doctor，但不得声称真实 Batch、remote-doctor、live E2E 或 release gate 已运行成功。完整边界见 `OPERATIONS.md`。
+当前源码中的 managed workflow 与 `sandcastle-queue workflow-host` dispatcher 已实现并通过本地合同测试。本 skill 可以完成本地 plan、install、lifecycle preview 和 doctor，但不得把本地测试写成真实 Batch、remote-doctor、live E2E 或 release gate 已成功。完整边界见 `OPERATIONS.md`。
 
 ## 工作流
 

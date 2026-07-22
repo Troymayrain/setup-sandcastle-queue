@@ -1,19 +1,24 @@
 import { ConfigurationError } from "../config.js";
 
 export type WorkflowOperation =
+  | "accept-no-change"
   | "abort"
+  | "complete-no-change"
+  | "finalize-batch"
   | "final-fix"
   | "process"
   | "remote-doctor"
   | "review-only";
 
 export type WorkflowCapability =
+  | "advance-batch"
   | "close-issue"
   | "dispatch-continuation"
   | "inspect-actions"
   | "publish-audit"
   | "push"
   | "read-issue"
+  | "release-batch"
   | "update-pull-request"
   | "upload-artifact";
 
@@ -49,6 +54,56 @@ function hasExactPermissions(block: string, expected: string): boolean {
     /\n    permissions:\n((?:      [a-z-]+: (?:none|read|write)\n)+)/u,
   )?.[1];
   return permissions?.trimEnd() === expected;
+}
+
+/** 读取受管 workflow 中某个 operation job 的显式权限声明。 */
+export function readWorkflowJobPermissions(
+  source: string,
+  operation: WorkflowOperation,
+): WorkflowJobPermissions | null {
+  if (
+    typeof source !== "string" ||
+    !Object.prototype.hasOwnProperty.call(WORKFLOW_OPERATION_CONTRACTS, operation)
+  ) {
+    return null;
+  }
+  const block = workflowJobBlock(source, operation);
+  const permissionSource = block?.match(
+    /\n    permissions:\n((?:      [a-z-]+: (?:none|read|write)\n)+)/u,
+  )?.[1];
+  if (!permissionSource) return null;
+  const entries = permissionSource
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(": "));
+  if (
+    entries.length !== 4 ||
+    entries.some(
+      (entry): entry is string[] =>
+        entry.length !== 2 ||
+        !["none", "read", "write"].includes(entry[1] ?? ""),
+    )
+  ) {
+    return null;
+  }
+  const permissions = new Map(entries as Array<[string, string]>);
+  if (
+    permissions.size !== 4 ||
+    [...permissions.keys()].some(
+      (name) =>
+        !["actions", "contents", "issues", "pull-requests"].includes(name),
+    )
+  ) {
+    return null;
+  }
+  return {
+    actions: permissions.get("actions") as WorkflowJobPermissions["actions"],
+    contents: permissions.get("contents") as WorkflowJobPermissions["contents"],
+    issues: permissions.get("issues") as WorkflowJobPermissions["issues"],
+    pullRequests: permissions.get(
+      "pull-requests",
+    ) as WorkflowJobPermissions["pullRequests"],
+  };
 }
 
 function expectedPermissionSource(operation: WorkflowOperation): string {
@@ -114,19 +169,24 @@ export function isWorkflowSecurityContractSatisfied(source: string): boolean {
 }
 
 const operations = new Set<WorkflowOperation>([
+  "accept-no-change",
   "abort",
+  "complete-no-change",
+  "finalize-batch",
   "final-fix",
   "process",
   "remote-doctor",
   "review-only",
 ]);
 const capabilities = new Set<WorkflowCapability>([
+  "advance-batch",
   "close-issue",
   "dispatch-continuation",
   "inspect-actions",
   "publish-audit",
   "push",
   "read-issue",
+  "release-batch",
   "update-pull-request",
   "upload-artifact",
 ]);
@@ -135,12 +195,14 @@ const capabilityPermissions: Record<
   WorkflowCapability,
   Partial<Record<keyof WorkflowJobPermissions, "read" | "write">>
 > = {
+  "advance-batch": { contents: "write" },
   "close-issue": { issues: "write" },
   "dispatch-continuation": { actions: "write" },
   "inspect-actions": { actions: "read" },
   "publish-audit": { issues: "write" },
   push: { contents: "write" },
   "read-issue": { issues: "read" },
+  "release-batch": { contents: "write" },
   "update-pull-request": { pullRequests: "write" },
   "upload-artifact": { actions: "write" },
 };
@@ -148,19 +210,58 @@ const capabilityPermissions: Record<
 export const WORKFLOW_OPERATION_CONTRACTS: Readonly<
   Record<WorkflowOperation, WorkflowOperationContract>
 > = {
+  "accept-no-change": {
+    capabilities: [
+      "close-issue",
+      "inspect-actions",
+      "publish-audit",
+      "read-issue",
+    ],
+    permissions: {
+      actions: "read",
+      contents: "read",
+      issues: "write",
+      pullRequests: "none",
+    },
+  },
   abort: {
     capabilities: [
       "close-issue",
       "inspect-actions",
       "publish-audit",
       "read-issue",
+      "release-batch",
       "update-pull-request",
     ],
     permissions: {
       actions: "read",
-      contents: "read",
+      contents: "write",
       issues: "write",
       pullRequests: "write",
+    },
+  },
+  "complete-no-change": {
+    capabilities: [
+      "close-issue",
+      "inspect-actions",
+      "publish-audit",
+      "read-issue",
+      "release-batch",
+    ],
+    permissions: {
+      actions: "read",
+      contents: "write",
+      issues: "write",
+      pullRequests: "none",
+    },
+  },
+  "finalize-batch": {
+    capabilities: ["release-batch"],
+    permissions: {
+      actions: "none",
+      contents: "write",
+      issues: "none",
+      pullRequests: "read",
     },
   },
   "final-fix": {
@@ -209,6 +310,7 @@ export const WORKFLOW_OPERATION_CONTRACTS: Readonly<
   },
   "review-only": {
     capabilities: [
+      "advance-batch",
       "dispatch-continuation",
       "inspect-actions",
       "publish-audit",
@@ -218,7 +320,7 @@ export const WORKFLOW_OPERATION_CONTRACTS: Readonly<
     ],
     permissions: {
       actions: "write",
-      contents: "read",
+      contents: "write",
       issues: "write",
       pullRequests: "write",
     },

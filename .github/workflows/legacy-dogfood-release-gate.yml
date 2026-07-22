@@ -115,9 +115,13 @@ jobs:
           if [[ "$target_object" != "$BASELINE_SHA" ]]; then
             exit 2
           fi
+          target_ref="$(gh api "repos/${LEGACY_REPOSITORY}" --jq .default_branch)"
+          if [[ -z "$target_ref" ]]; then
+            exit 2
+          fi
           gh workflow run sandcastle-legacy-dogfood.yml \
             --repo "$LEGACY_REPOSITORY" \
-            --ref main \
+            --ref "$target_ref" \
             -f "baseline_sha=$BASELINE_SHA" \
             -f "candidate_repository=$CANDIDATE_REPOSITORY" \
             -f "candidate_sha=$CANDIDATE_SHA" \

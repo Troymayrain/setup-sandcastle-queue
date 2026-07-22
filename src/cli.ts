@@ -93,6 +93,10 @@ import {
   evaluateReleaseBundleGate,
   readReleaseBundleGateInput,
 } from "./release/bundle.js";
+import {
+  runWorkflowHostCommand,
+  runWorkflowTicketDriver,
+} from "./workflow/host.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -121,6 +125,26 @@ async function main(): Promise<void> {
 
   if (command === "egress-proxy") {
     await runEgressProxyProcess();
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "workflow-host") {
+    const result = await runWorkflowHostCommand(
+      process.cwd(),
+      arguments_.slice(1),
+    );
+    writeJson({ command, ok: true, result, version: VERSION });
+    process.exitCode = workflowHostFailed(result.result) ? 4 : 0;
+    return;
+  }
+
+  if (command === "ticket-driver") {
+    const result = await runWorkflowTicketDriver(
+      process.cwd(),
+      arguments_.slice(1),
+    );
+    writeJson({ command, ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }
@@ -945,6 +969,15 @@ async function main(): Promise<void> {
       path: "",
     },
   ]);
+}
+
+function workflowHostFailed(result: unknown): boolean {
+  return (
+    result !== null &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    (result as { status?: unknown }).status === "failed"
+  );
 }
 
 try {

@@ -52,6 +52,7 @@ test("zero-diff Tickets and Batches require separate workflow-authorized human d
     "fixture",
   ]);
   const base = "a".repeat(40);
+  let activeRef = base;
   const batchId = "p1-aaaaaaaaaaaa-r9001";
   const branch = `sandcastle/${batchId}`;
   const sessionId = "123e4567-e89b-42d3-a456-426614174000";
@@ -108,11 +109,31 @@ test("zero-diff Tickets and Batches require separate workflow-authorized human d
     }
     if (
       request.method === "GET" &&
-      (request.url ===
-        `/repos/acme/widget/git/ref/heads/${encodeURIComponent(branch)}` ||
-        request.url === "/repos/acme/widget/git/ref/heads/sandcastle%2Factive")
+      request.url ===
+        `/repos/acme/widget/git/ref/heads/${encodeURIComponent(branch)}`
     ) {
       response.end(JSON.stringify({ object: { sha: base } }));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url === "/repos/acme/widget/git/ref/heads/sandcastle%2Factive"
+    ) {
+      if (activeRef) {
+        response.end(JSON.stringify({ object: { sha: activeRef } }));
+      } else {
+        response.statusCode = 404;
+        response.end('{"message":"Not Found"}');
+      }
+      return;
+    }
+    if (
+      request.method === "DELETE" &&
+      request.url === "/repos/acme/widget/git/refs/heads/sandcastle%2Factive"
+    ) {
+      activeRef = null;
+      response.statusCode = 204;
+      response.end();
       return;
     }
     if (request.method === "GET" && request.url === "/repos/acme/widget/actions/runs/9001") {
@@ -275,6 +296,30 @@ test("zero-diff Tickets and Batches require separate workflow-authorized human d
       operation: "complete-no-change",
       reason: "All child work was already satisfied.",
     });
+    activeRef = "b".repeat(40);
+    await assert.rejects(
+      completeNoChangeBatch(
+        repository,
+        {
+          batchId,
+          expectedHead: base,
+          reason: "All child work was already satisfied.",
+        },
+        configPath,
+        {
+          ...baseEnvironment,
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+          GITHUB_EVENT_PATH: batchEvent,
+        },
+      ),
+      (error) =>
+        error.diagnostics?.[0]?.code ===
+        "BATCH_NO_CHANGE_ACTIVE_REF_MISMATCH",
+    );
+    assert.equal(issues.get(1).state, "open");
+    assert.equal(comments.get(1).length, 0);
+    assert.equal(activeRef, "b".repeat(40));
+    activeRef = base;
     const completed = await completeNoChangeBatch(
       repository,
       {
@@ -290,6 +335,30 @@ test("zero-diff Tickets and Batches require separate workflow-authorized human d
       },
     );
     assert.equal(completed.status, "completed-no-change");
+    const retried = await completeNoChangeBatch(
+      repository,
+      {
+        batchId,
+        expectedHead: base,
+        reason: "All child work was already satisfied.",
+      },
+      configPath,
+      {
+        ...baseEnvironment,
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        GITHUB_EVENT_PATH: batchEvent,
+      },
+    );
+    assert.deepEqual(retried, completed);
+    assert.equal(activeRef, null);
+    assert.equal(
+      requests.filter(
+        ({ method, url }) =>
+          method === "DELETE" &&
+          url === "/repos/acme/widget/git/refs/heads/sandcastle%2Factive",
+      ).length,
+      1,
+    );
     assert.equal(issues.get(1).state, "closed");
     assert.match(comments.get(1)[0].body, /sandcastle-batch-no-change-completion/u);
     assert.equal(

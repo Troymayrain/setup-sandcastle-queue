@@ -1,10 +1,15 @@
-import { readFile, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
 import { canonicalJson } from "../canonical-json.js";
 import { ConfigurationError, type ProjectConfig } from "../config.js";
 import { sha256 } from "../hash.js";
+import {
+  hasExactShape,
+  isRecord,
+  readBoundedJsonFile,
+} from "../json.js";
 import {
   renderCandidateAssets,
   RUNTIME_SKILL_HASHES,
@@ -156,21 +161,6 @@ export interface ReleaseBundleGateResult {
   schemaVersion: 1;
   tag: string | null;
   version: string | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  keys: readonly string[],
-): value is Record<string, unknown> {
-  return (
-    isRecord(value) &&
-    keys.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => keys.includes(key))
-  );
 }
 
 function fileHash(path: string): string {
@@ -686,15 +676,8 @@ export function evaluateReleaseBundleGate(
 }
 
 export async function readReleaseBundleGateInput(path: string): Promise<unknown> {
-  let source: string;
-  try {
-    source = await new Promise<string>((resolve, reject) => {
-      readFile(path, "utf8", (error, data) => {
-        if (error) reject(error);
-        else resolve(data);
-      });
-    });
-  } catch {
+  const result = await readBoundedJsonFile(path, maximumInputBytes);
+  if (!result.ok && result.reason === "unavailable") {
     throw new ConfigurationError([
       {
         code: "RELEASE_GATE_INPUT_UNAVAILABLE",
@@ -703,7 +686,7 @@ export async function readReleaseBundleGateInput(path: string): Promise<unknown>
       },
     ]);
   }
-  if (Buffer.byteLength(source, "utf8") > maximumInputBytes) {
+  if (!result.ok && result.reason === "too-large") {
     throw new ConfigurationError([
       {
         code: "RELEASE_GATE_INPUT_TOO_LARGE",
@@ -712,9 +695,7 @@ export async function readReleaseBundleGateInput(path: string): Promise<unknown>
       },
     ]);
   }
-  try {
-    return JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw new ConfigurationError([
       {
         code: "RELEASE_GATE_INPUT_INVALID_JSON",
@@ -723,4 +704,5 @@ export async function readReleaseBundleGateInput(path: string): Promise<unknown>
       },
     ]);
   }
+  return result.value;
 }

@@ -6,6 +6,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -374,4 +376,25 @@ test("reinstalling an unchanged managed installation is a zero-diff operation", 
   );
   assert.equal(git(repository, ["rev-parse", "HEAD"]), headBefore);
   assert.equal(git(repository, ["ls-files", "--stage", "-z"]), indexBefore);
+});
+
+test("install refuses a symlinked candidate parent without writing outside the repository", () => {
+  const repository = createRepository();
+  const outside = mkdtempSync(join(tmpdir(), "sandcastle-install-outside-"));
+  symlinkSync(outside, join(repository, ".sandcastle"));
+
+  const planned = spawnSync(
+    process.execPath,
+    [cliPath.pathname, "plan", "--config", writeConfig()],
+    { cwd: repository, encoding: "utf8" },
+  );
+
+  assert.equal(planned.status, 2, planned.stderr);
+  assert.equal(
+    JSON.parse(planned.stdout).diagnostics.some(
+      ({ code }) => code === "INSTALL_PATH_SYMLINK_FORBIDDEN",
+    ),
+    true,
+  );
+  assert.deepEqual(readdirSync(outside), []);
 });

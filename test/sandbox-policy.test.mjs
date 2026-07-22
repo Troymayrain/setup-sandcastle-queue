@@ -110,6 +110,7 @@ if (argv[0] === "run" && argv.includes("--detach")) {
 function sandboxEnvironment(fakeDocker) {
   return {
     ...process.env,
+    ANTHROPIC_BASE_URL: "https://api.example.com",
     ANTHROPIC_AUTH_TOKEN: "real-provider-token-must-not-enter-sandbox",
     GITHUB_TOKEN: "github-token-must-not-enter-sandbox",
     SANDCASTLE_BATCH_ID: "p1-aaaaaaaaaaaa-r9001",
@@ -204,7 +205,7 @@ test("sandbox stages use an internal network, exact egress hosts, and session-on
     ({ argv }) =>
       argv[0] === "run" &&
       !argv.includes("egress-proxy") &&
-      (argv.at(-2) === "npm" || argv.at(-2) === "codex"),
+      (argv.includes("npm") || argv.includes("codex")),
   );
   assert.equal(stageRuns.length, 2);
   for (const { argv, env } of [...proxyRuns, ...stageRuns]) {
@@ -219,16 +220,62 @@ test("sandbox stages use an internal network, exact egress hosts, and session-on
     assert.equal(env.GITHUB_TOKEN, undefined);
     assert.equal(env.SANDCASTLE_SESSION_TOKEN, undefined);
   }
+  for (const { argv } of stageRuns) {
+    assert.equal(argv.includes("--entrypoint"), true);
+    assert.equal(
+      argv.some(
+        (argument) =>
+          argument.startsWith("type=bind,") &&
+          argument.includes("dst=/workspace/.git") &&
+          argument.endsWith(",readonly"),
+      ),
+      true,
+      "sandbox must overlay host Git metadata read-only",
+    );
+  }
   for (const { env } of stageRuns) {
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, environment.SANDCASTLE_SESSION_TOKEN);
     assert.equal(env.ANTHROPIC_BASE_URL, environment.SANDCASTLE_BROKER_BASE_URL);
     assert.equal(env.ANTHROPIC_AUTH_TOKEN === environment.ANTHROPIC_AUTH_TOKEN, false);
   }
+  const agentFacingCalls = calls.filter(
+    ({ argv }) => !argv.includes("credential-broker"),
+  );
   assert.equal(
-    JSON.stringify(calls).includes(environment.ANTHROPIC_AUTH_TOKEN),
+    JSON.stringify(agentFacingCalls).includes(environment.ANTHROPIC_AUTH_TOKEN),
     false,
   );
   assert.equal(JSON.stringify(calls).includes(environment.GITHUB_TOKEN), false);
+});
+
+test("egress address policy rejects private, loopback, link-local, and mapped addresses", async () => {
+  const { isPublicNetworkAddress } = await import("../dist/index.js");
+
+  for (const address of [
+    "0.0.0.0",
+    "10.0.0.1",
+    "100.64.0.1",
+    "127.0.0.1",
+    "169.254.169.254",
+    "172.16.0.1",
+    "192.168.1.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "::",
+    "::1",
+    "::ffff:127.0.0.1",
+    "64:ff9b::127.0.0.1",
+    "100::1",
+    "2002:7f00:1::",
+    "fc00::1",
+    "fec0::1",
+    "fe80::1",
+  ]) {
+    assert.equal(isPublicNetworkAddress(address), false, address);
+  }
+  assert.equal(isPublicNetworkAddress("8.8.8.8"), true);
+  assert.equal(isPublicNetworkAddress("2606:4700:4700::1111"), true);
+  assert.equal(isPublicNetworkAddress("not-an-address"), false);
 });
 
 test("sandbox policy rejects unsafe hosts and caller-controlled Docker escape hatches", () => {
@@ -388,4 +435,29 @@ test("protected-path gate rejects tracked and untracked control-plane changes", 
     readFileSync(join(repository, ".sandcastle", "config.json"), "utf8"),
     '{"changed":true}\n',
   );
+});
+
+test("protected-path gate does not execute repository-local Git helpers", () => {
+  const repository = createRepository();
+  const before = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  const hookDirectory = mkdtempSync(join(tmpdir(), "sandcastle-git-helper-"));
+  const marker = join(hookDirectory, "executed");
+  const fsmonitor = join(hookDirectory, "fsmonitor");
+  writeFileSync(
+    fsmonitor,
+    `#!/bin/sh\n: > ${JSON.stringify(marker)}\nprintf '{}\\n'\n`,
+  );
+  chmodSync(fsmonitor, 0o755);
+  execFileSync("git", ["-C", repository, "config", "core.fsmonitor", fsmonitor]);
+
+  const result = spawnSync(
+    process.execPath,
+    [cliPath.pathname, "check-protected", "--before", before],
+    { cwd: repository, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(marker), false);
 });

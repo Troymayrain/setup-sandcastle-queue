@@ -1,8 +1,12 @@
-import { readFile } from "node:fs/promises";
-
 import { ConfigurationError, InfrastructureError } from "../config.js";
 import { resolveGitHubRepository } from "../github/configure.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
+import { isGitObjectId } from "../git/object-id.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { readBoundedJsonFile } from "../json.js";
 import { readBatchRunState } from "./github-run.js";
 import {
   parseBatchNoChangeCompletion,
@@ -29,7 +33,15 @@ interface GitHubIssue {
 interface NoChangeGitHubResponse<T> {
   data: T | null;
   headers: Headers;
+  status: number;
 }
+
+interface GitHubReference {
+  object?: { sha?: string };
+}
+
+const batchIdPattern = /^p([1-9][0-9]*)-[a-f0-9]{12}-r[1-9][0-9]*$/u;
+const activeBatchRefPath = "heads/sandcastle%2Factive";
 
 export interface RecordTicketNoChangeOptions {
   batchId: string;
@@ -77,10 +89,10 @@ class NoChangeGitHubClient {
   }
 
   async request<T>(
-    method: "GET" | "PATCH" | "POST",
+    method: "DELETE" | "GET" | "PATCH" | "POST",
     path: string,
     body: object | undefined,
-    expectedStatus: number,
+    allowedStatuses: readonly number[],
   ): Promise<NoChangeGitHubResponse<T>> {
     let response: Response;
     try {
@@ -102,18 +114,21 @@ class NoChangeGitHubClient {
         "Unable to reach GitHub for a no-change decision.",
       );
     }
-    if (response.status !== expectedStatus) {
+    if (!allowedStatuses.includes(response.status)) {
       throw infrastructureError(
         method === "GET" ? "GITHUB_API_FAILED" : "GITHUB_API_WRITE_FAILED",
         `GitHub no-change ${method} failed with status ${response.status}.`,
       );
     }
-    const source = await response.text();
-    if (!source) return { data: null, headers: response.headers };
+    const source = await readBoundedGitHubResponseText(response);
+    if (!source) {
+      return { data: null, headers: response.headers, status: response.status };
+    }
     try {
       return {
         data: JSON.parse(source) as T,
         headers: response.headers,
+        status: response.status,
       };
     } catch {
       throw infrastructureError(
@@ -123,16 +138,23 @@ class NoChangeGitHubClient {
     }
   }
 
-  get<T>(path: string): Promise<NoChangeGitHubResponse<T>> {
-    return this.request<T>("GET", path, undefined, 200);
+  delete<T>(path: string): Promise<NoChangeGitHubResponse<T>> {
+    return this.request<T>("DELETE", path, undefined, [204]);
+  }
+
+  get<T>(
+    path: string,
+    allowedStatuses: readonly number[] = [200],
+  ): Promise<NoChangeGitHubResponse<T>> {
+    return this.request<T>("GET", path, undefined, allowedStatuses);
   }
 
   patch<T>(path: string, body: object): Promise<NoChangeGitHubResponse<T>> {
-    return this.request<T>("PATCH", path, body, 200);
+    return this.request<T>("PATCH", path, body, [200]);
   }
 
   post<T>(path: string, body: object): Promise<NoChangeGitHubResponse<T>> {
-    return this.request<T>("POST", path, body, 201);
+    return this.request<T>("POST", path, body, [201]);
   }
 }
 
@@ -142,10 +164,6 @@ function configurationError(code: string, message: string): ConfigurationError {
 
 function infrastructureError(code: string, message: string): InfrastructureError {
   return new InfrastructureError([{ code, message }]);
-}
-
-function validSha(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9]{40,64}$/u.test(value);
 }
 
 function validSession(value: unknown): value is string {
@@ -163,12 +181,6 @@ function validReason(reason: string): boolean {
     reason.length >= 8 &&
     reason.length <= 2_000 &&
     !reason.includes("\u0000")
-  );
-}
-
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
   );
 }
 
@@ -232,7 +244,7 @@ async function listComments(
       );
     }
     comments.push(...response.data);
-    if (!hasNextPage(response.headers)) return comments;
+    if (!hasNextGitHubPage(response.headers)) return comments;
   }
   throw infrastructureError(
     "GITHUB_API_INVALID_RESPONSE",
@@ -287,30 +299,23 @@ async function workflowInputs(
       "No-change decisions are allowed only from an explicit workflow_dispatch.",
     );
   }
-  let source: string;
-  try {
-    source = await readFile(environment.GITHUB_EVENT_PATH, "utf8");
-  } catch {
+  const result = await readBoundedJsonFile(
+    environment.GITHUB_EVENT_PATH,
+    1024 * 1024,
+  );
+  if (!result.ok && result.reason !== "invalid-json") {
     throw configurationError(
       "NO_CHANGE_AUTHORIZATION_REQUIRED",
       "Unable to verify the workflow_dispatch no-change decision.",
     );
   }
-  if (source.length > 1024 * 1024) {
-    throw configurationError(
-      "NO_CHANGE_AUTHORIZATION_REQUIRED",
-      "The workflow_dispatch event payload exceeds the supported size.",
-    );
-  }
-  let event: unknown;
-  try {
-    event = JSON.parse(source) as unknown;
-  } catch {
+  if (!result.ok) {
     throw configurationError(
       "NO_CHANGE_AUTHORIZATION_REQUIRED",
       "The workflow_dispatch event payload is invalid.",
     );
   }
+  const event = result.value;
   const inputs =
     event !== null && typeof event === "object" && !Array.isArray(event)
       ? (event as { inputs?: unknown }).inputs
@@ -343,7 +348,7 @@ export async function recordTicketNoChange(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<TicketNoChangeResult> {
   if (
-    !validSha(options.expectedHead) ||
+    !isGitObjectId(options.expectedHead) ||
     !validSession(options.sessionId) ||
     !Number.isSafeInteger(options.ticket) ||
     options.ticket <= 0
@@ -408,7 +413,7 @@ export async function acceptTicketNoChange(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<TicketNoChangeResult> {
   if (
-    !validSha(options.expectedHead) ||
+    !isGitObjectId(options.expectedHead) ||
     !Number.isSafeInteger(options.ticket) ||
     options.ticket <= 0 ||
     (options.sessionId !== undefined && !validSession(options.sessionId)) ||
@@ -517,13 +522,73 @@ function completionMatches(
   );
 }
 
+async function completedNoChangeResult(
+  client: NoChangeGitHubClient,
+  repository: string,
+  options: CompleteNoChangeBatchOptions,
+  parentNumber: number,
+): Promise<BatchNoChangeResult> {
+  const [comments, issueResponse] = await Promise.all([
+    listComments(client, repository, parentNumber),
+    client.get<GitHubIssue>(`/repos/${repository}/issues/${parentNumber}`),
+  ]);
+  const parent = issueResponse.data;
+  const completions = comments
+    .map(({ body }) => parseBatchNoChangeCompletion(body as string))
+    .filter((record): record is BatchNoChangeCompletionRecord => record !== null);
+  if (
+    !parent ||
+    parent.number !== parentNumber ||
+    parent.state !== "closed" ||
+    completions.length !== 1 ||
+    !completionMatches(completions[0] as BatchNoChangeCompletionRecord, options, parentNumber)
+  ) {
+    throw configurationError(
+      "BATCH_NO_CHANGE_RECORD_CONFLICT",
+      "The released Batch lacks one matching completed no-change decision.",
+    );
+  }
+  return {
+    batchId: options.batchId,
+    head: options.expectedHead,
+    parent: parentNumber,
+    status: "completed-no-change",
+  };
+}
+
+async function releaseActiveBatch(
+  client: NoChangeGitHubClient,
+  repository: string,
+  expectedHead: string,
+): Promise<void> {
+  const active = await client.get<GitHubReference>(
+    `/repos/${repository}/git/ref/${activeBatchRefPath}`,
+    [200, 404],
+  );
+  if (active.status === 404) return;
+  if (active.data?.object?.sha !== expectedHead) {
+    throw configurationError(
+      "BATCH_NO_CHANGE_ACTIVE_REF_MISMATCH",
+      "The active Batch ref no longer matches the Batch being completed.",
+    );
+  }
+  await client.delete(
+    `/repos/${repository}/git/refs/${activeBatchRefPath}`,
+  );
+}
+
 export async function completeNoChangeBatch(
   repositoryPath: string,
   options: CompleteNoChangeBatchOptions,
   configPath: string | undefined,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<BatchNoChangeResult> {
-  if (!validSha(options.expectedHead) || !validReason(options.reason)) {
+  const batchIdentity = options.batchId.match(batchIdPattern);
+  if (
+    !batchIdentity ||
+    !isGitObjectId(options.expectedHead) ||
+    !validReason(options.reason)
+  ) {
     throw configurationError(
       "NO_CHANGE_INPUT_INVALID",
       "Batch no-change completion identity or reason is invalid.",
@@ -539,6 +604,25 @@ export async function completeNoChangeBatch(
     environment,
   );
   const { client, repository, root } = await context(repositoryPath, environment);
+  const active = await client.get<GitHubReference>(
+    `/repos/${repository}/git/ref/${activeBatchRefPath}`,
+    [200, 404],
+  );
+  const parentNumber = Number(batchIdentity[1]);
+  if (active.status === 404) {
+    return completedNoChangeResult(
+      client,
+      repository,
+      options,
+      parentNumber,
+    );
+  }
+  if (active.data?.object?.sha !== options.expectedHead) {
+    throw configurationError(
+      "BATCH_NO_CHANGE_ACTIVE_REF_MISMATCH",
+      "The active Batch ref does not match the Batch being completed.",
+    );
+  }
   const state = await readBatchRunState(
     root,
     options.batchId,
@@ -601,6 +685,7 @@ export async function completeNoChangeBatch(
       state: "closed",
     });
   }
+  await releaseActiveBatch(client, repository, options.expectedHead);
   return {
     batchId: options.batchId,
     head: options.expectedHead,

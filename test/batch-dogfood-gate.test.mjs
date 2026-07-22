@@ -279,6 +279,13 @@ test("Batch dogfood workflow is manual-only and requires the legacy dogfood prer
   assert.match(workflow, /persist-credentials: false/u);
   assert.match(
     workflow,
+    /target_ref="\$\(gh api "repos\/\$\{DOGFOOD_REPOSITORY\}" --jq \.default_branch\)"/u,
+  );
+  assert.match(workflow, /\[\[ -z "\$target_ref" \]\]/u);
+  assert.match(workflow, /--ref "\$target_ref"/u);
+  assert.doesNotMatch(workflow, /--ref main/u);
+  assert.match(
+    workflow,
     /sandcastle-batch-dogfood-\$\{\{ inputs\.candidate_sha \}\}/u,
   );
 });

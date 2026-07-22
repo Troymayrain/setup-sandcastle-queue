@@ -5,14 +5,14 @@
 ## 支持边界
 
 - 支持 GitHub.com repository 与 GitHub Actions，以新的父 PRD 启动最多三票一轮的 dependency-aware Batch。
-- 支持 Node/npm、Python/pip、Python/uv、Go module、Java 21/Maven、composite 与显式 custom runtime adapter。
+- 支持 Node/npm、Python/pip、Python/uv、Go module、Java 21/Maven 3.9.9、composite 与显式 custom runtime adapter；Java adapter 将 wrapper 声明绑定到受支持的官方 distribution digest，并要求 wrapper 实际执行 checksum。
 - 支持 deterministic install plan、显式 `planHash` 确认、managed upgrade、legacy adopt、exact-package rollback 与保守 uninstall。
-- 支持 credential broker、egress allowlist、protected control-plane paths、remote doctor、checkpoint/continuation、publication reconciliation、cumulative Final Review/Fix 与 sanitized audit。
+- 支持 credential broker、egress allowlist、protected control-plane paths、remote doctor、checkpoint/continuation、publication reconciliation、cumulative Final Review/Fix、三种 Batch 终态的 active-ref 释放与 sanitized audit。
 - 控制面固定为 Node.js `22.22.2`、Claude Code `2.1.217` 和 immutable `linux/amd64` GHCR digest。
 
 ## 已知限制
 
-- 当前候选源码中的 managed workflow 仍调用尚未实现的 `sandcastle-queue workflow-host`，所以真实 Batch、remote doctor、live E2E 与 dogfood workflow 会 fail closed。这个 release blocker 未修复前不得发布 `1.0.0`。
+- `sandcastle-queue workflow-host` 与 managed workflow operation 已实现并通过本地合同测试，但当前候选尚未取得真实 Batch、remote doctor、live E2E 或 dogfood 的远端成功证据。所有 release gate 绑定同一候选并通过前，不得发布 `1.0.0`。
 - 只支持 GitHub.com；不支持 GitHub Enterprise Server、自托管 runner 或非 `linux/amd64` 控制面镜像。
 - lifecycle 命令只能生成当前精确 CLI package 携带的 release，不解析 floating tag，也不自动 merge managed drift。
 - 安装器不会替目标仓库执行 `commit`、`push`、`stash` 或 `reset`；GitHub resources 与最终 release 仍需 maintainer 人工授权。

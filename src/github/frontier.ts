@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { canonicalJson } from "../canonical-json.js";
@@ -9,8 +8,13 @@ import {
   type ProjectConfig,
 } from "../config.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { readBoundedJsonFile } from "../json.js";
 import { resolveGitHubRepository } from "./configure.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "./response.js";
 
 const trustedAssociations = new Set(["COLLABORATOR", "MEMBER", "OWNER"]);
 const auditMarkerPattern = /<!--\s*sandcastle(?::|-)?audit\b/iu;
@@ -137,8 +141,9 @@ class GitHubFrontierClient {
       ]);
     }
     try {
+      const source = await readBoundedGitHubResponseText(response);
       return {
-        data: (await response.json()) as T,
+        data: JSON.parse(source) as T,
         headers: response.headers,
       };
     } catch {
@@ -204,9 +209,7 @@ async function listIssues(
       throw invalidGitHubResponse();
     }
     issues.push(...response.data);
-    if (!/(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-      response.headers.get("link") ?? "",
-    )) {
+    if (!hasNextGitHubPage(response.headers)) {
       return issues;
     }
   }
@@ -226,9 +229,7 @@ async function listComments(
       throw invalidGitHubResponse();
     }
     comments.push(...response.data);
-    if (!/(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-      response.headers.get("link") ?? "",
-    )) {
+    if (!hasNextGitHubPage(response.headers)) {
       return comments;
     }
   }
@@ -441,22 +442,20 @@ export async function computeTicketFrontier(
 }
 
 export async function readSpecSnapshot(path: string): Promise<TicketSpecSnapshot> {
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
+  const result = await readBoundedJsonFile(path, 1024 * 1024);
+  if (!result.ok) {
     throw frontierError(
       "SPEC_SNAPSHOT_INVALID",
       "Unable to read a valid spec snapshot.",
     );
   }
-  if (!validSpecSnapshot(candidate)) {
+  if (!validSpecSnapshot(result.value)) {
     throw frontierError(
       "SPEC_SNAPSHOT_INVALID",
       "Unable to read a valid spec snapshot.",
     );
   }
-  return candidate;
+  return result.value;
 }
 
 function validSnapshotComment(candidate: unknown): candidate is SpecCommentSnapshot {

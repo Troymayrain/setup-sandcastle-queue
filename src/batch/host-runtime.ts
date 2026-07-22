@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 
 import { ConfigurationError, InfrastructureError } from "../config.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
 import {
   dispatchBatchContinuation,
   readBatchRunState,
@@ -11,10 +11,17 @@ import type {
   BatchTicketExecution,
   RunBatchRuntime,
 } from "./run.js";
+import type { RunAuditTicketEvidence } from "../audit/run.js";
 
 export interface HostBatchRuntimeOptions {
   configPath: string;
   ticketDriver: string[];
+}
+
+export interface HostBatchRuntime extends RunBatchRuntime {
+  auditTickets: () => RunAuditTicketEvidence[];
+  currentState: () => BatchRunState | undefined;
+  initialState: () => BatchRunState | undefined;
 }
 
 function configurationError(code: string, message: string): ConfigurationError {
@@ -31,7 +38,7 @@ function runTicketDriver(
   arguments_: string[],
   signal: AbortSignal,
   environment: NodeJS.ProcessEnv,
-): Promise<BatchTicketExecution> {
+): Promise<BatchTicketExecution & { audit?: RunAuditTicketEvidence }> {
   return new Promise((resolve, reject) => {
     execFile(
       command[0] as string,
@@ -82,7 +89,7 @@ export async function createHostBatchRuntime(
   repositoryPath: string,
   options: HostBatchRuntimeOptions,
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<RunBatchRuntime> {
+): Promise<HostBatchRuntime> {
   if (!Array.isArray(options.ticketDriver) || options.ticketDriver.length === 0) {
     throw configurationError(
       "TICKET_DRIVER_INVALID",
@@ -91,7 +98,21 @@ export async function createHostBatchRuntime(
   }
   const root = await resolveRepositoryRoot(repositoryPath);
   let currentState: BatchRunState | undefined;
+  let initialState: BatchRunState | undefined;
+  const auditTickets: RunAuditTicketEvidence[] = [];
   return {
+    auditTickets() {
+      return auditTickets.map((ticket) => ({
+        ...ticket,
+        skills: { ...ticket.skills },
+      }));
+    },
+    currentState() {
+      return currentState;
+    },
+    initialState() {
+      return initialState;
+    },
     async dispatchContinuation(input) {
       if (!currentState) {
         throw configurationError(
@@ -102,7 +123,7 @@ export async function createHostBatchRuntime(
       await dispatchBatchContinuation(root, currentState, input, environment);
     },
     async processTicket({ batchId, beforeHead, number, signal }) {
-      return runTicketDriver(
+      const result = await runTicketDriver(
         root,
         options.ticketDriver,
         [
@@ -116,6 +137,8 @@ export async function createHostBatchRuntime(
         signal,
         environment,
       );
+      if (result.audit) auditTickets.push(result.audit);
+      return result;
     },
     async readState(_repositoryPath, batchId) {
       currentState = await readBatchRunState(
@@ -124,6 +147,7 @@ export async function createHostBatchRuntime(
         options.configPath,
         environment,
       );
+      initialState ??= currentState;
       return currentState;
     },
   };

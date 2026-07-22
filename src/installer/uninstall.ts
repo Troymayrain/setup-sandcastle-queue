@@ -11,11 +11,16 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { canonicalJson } from "../canonical-json.js";
 import { ConfigurationError, InfrastructureError } from "../config.js";
 import { sha256 } from "../hash.js";
-import { VERSION } from "../version.js";
+import { isRecord, readBoundedJsonFile } from "../json.js";
 import {
   resolveRepositoryGitPath,
   resolveRepositoryRoot,
-} from "./plan.js";
+} from "../git/repository.js";
+import { VERSION } from "../version.js";
+import {
+  assertSafeRepositoryParents,
+  resolveSafeRepositoryTarget,
+} from "./safe-path.js";
 
 const remoteResourcesPreserved = [
   "audit-history",
@@ -83,10 +88,6 @@ function uninstallError(code: string, message: string): ConfigurationError {
   return new ConfigurationError([{ code, message, path: "" }]);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function isSafeRelativePath(path: string): boolean {
   const normalized = relative(".", path);
   return (
@@ -100,7 +101,10 @@ function isSafeRelativePath(path: string): boolean {
 async function readManifest(
   root: string,
 ): Promise<{ contents: Buffer; manifest: InstallationManifest }> {
-  const path = join(root, ".sandcastle", "installation.json");
+  const path = await assertSafeRepositoryParents(
+    root,
+    ".sandcastle/installation.json",
+  );
   let contents: Buffer;
   let candidate: unknown;
   try {
@@ -216,7 +220,9 @@ export async function createUninstallPreview(
       preserved.push({ path, reason });
       continue;
     }
-    const currentSha256 = await fileHash(join(root, path));
+    const currentSha256 = await fileHash(
+      await assertSafeRepositoryParents(root, path),
+    );
     if (currentSha256 === recorded.sha256) {
       removals.push({ path, sha256: recorded.sha256 });
     } else {
@@ -327,35 +333,26 @@ function assertUninstallPlan(candidate: unknown): asserts candidate is Uninstall
 }
 
 export async function readUninstallPlan(path: string): Promise<UninstallPlan> {
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
+  const result = await readBoundedJsonFile(path, 4 * 1024 * 1024);
+  if (!result.ok) {
     throw uninstallError(
       "UNINSTALL_PLAN_READ_FAILED",
       "Unable to read a valid uninstall plan.",
     );
   }
-  assertUninstallPlan(candidate);
-  return candidate;
+  assertUninstallPlan(result.value);
+  return result.value;
 }
 
-function safeTarget(root: string, path: string): string {
+async function safeTarget(root: string, path: string): Promise<string> {
   if (!isSafeRelativePath(path)) {
     throw uninstallError(
       "UNINSTALL_PLAN_INVALID",
       "Uninstall plan contains an unsafe path.",
     );
   }
-  const target = join(root, path);
-  const fromRoot = relative(root, target);
-  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
-    throw uninstallError(
-      "UNINSTALL_PLAN_INVALID",
-      "Uninstall plan contains an unsafe path.",
-    );
-  }
-  return target;
+  resolveSafeRepositoryTarget(root, path);
+  return assertSafeRepositoryParents(root, path);
 }
 
 export async function applyUninstallPlan(
@@ -378,7 +375,7 @@ export async function applyUninstallPlan(
       "Uninstall targets changed after the plan was created.",
     );
   }
-  const manifestPath = join(root, ".sandcastle", "installation.json");
+  const manifestPath = await safeTarget(root, ".sandcastle/installation.json");
   if ((await fileHash(manifestPath)) !== plan.manifestSha256) {
     throw uninstallError(
       "PLAN_STALE",
@@ -386,7 +383,7 @@ export async function applyUninstallPlan(
     );
   }
   for (const removal of plan.removals) {
-    if ((await fileHash(safeTarget(root, removal.path))) !== removal.sha256) {
+    if ((await fileHash(await safeTarget(root, removal.path))) !== removal.sha256) {
       throw uninstallError(
         "PLAN_STALE",
         "A removal target changed after the uninstall plan was created.",
@@ -403,7 +400,7 @@ export async function applyUninstallPlan(
   const moved: Array<{ backup: string; target: string }> = [];
   try {
     for (const removal of plan.removals) {
-      const target = safeTarget(root, removal.path);
+      const target = await safeTarget(root, removal.path);
       const backup = join(transactionRoot, "backup", removal.path);
       await mkdir(dirname(backup), { mode: 0o700, recursive: true });
       await rename(target, backup);

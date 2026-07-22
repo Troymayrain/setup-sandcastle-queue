@@ -9,10 +9,15 @@ import {
   readProjectConfig,
 } from "../config.js";
 import { resolveGitHubRepository } from "../github/configure.js";
+import {
+  hasNextGitHubPage,
+  readBoundedGitHubResponseText,
+} from "../github/response.js";
+import { isGitObjectId } from "../git/object-id.js";
 import { sha256 } from "../hash.js";
-import { resolveRepositoryRoot } from "../installer/plan.js";
+import { resolveRepositoryRoot } from "../git/repository.js";
+import { hasExactShape, isRecord } from "../json.js";
 
-const gitShaPattern = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const hashPattern = /^[a-f0-9]{64}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
 const sessionIdPattern =
@@ -41,7 +46,32 @@ export interface RunAuditTicketEvidence {
   verificationHash: string | null;
 }
 
+export interface RunAuditReviewExecution {
+  receiptId: string;
+  sessionId: string;
+}
+
+export interface RunAuditReviewEvidence {
+  axes: {
+    Spec: RunAuditReviewExecution;
+    Standards: RunAuditReviewExecution;
+  } | null;
+  findingCodes: string[];
+  fix: RunAuditReviewExecution | null;
+  phase:
+    | "fix-1"
+    | "fix-2"
+    | "needs-human-fix"
+    | "passed"
+    | "review-0"
+    | "review-1"
+    | "review-2"
+    | "review-only";
+  verificationHash: string | null;
+}
+
 export type RunAuditOutcome =
+  | "aborted"
   | "awaiting-enrollment"
   | "blocked"
   | "cancelled"
@@ -50,6 +80,10 @@ export type RunAuditOutcome =
   | "conflict"
   | "correction"
   | "failed"
+  | "final-fix"
+  | "final-review-findings"
+  | "final-review-passed"
+  | "needs-human-fix"
   | "partial"
   | "ready-for-final-review"
   | "stale-continuation"
@@ -76,6 +110,7 @@ export interface RunAuditInput {
   predecessorRunId: string | null;
   runId: string;
   runtimeImage: string;
+  review?: RunAuditReviewEvidence;
   schemaVersion: 1;
   tickets: RunAuditTicketEvidence[];
   timing: {
@@ -133,6 +168,7 @@ interface RunAuditSummary extends RunAuditArtifact {
 }
 
 const outcomes = new Set<RunAuditOutcome>([
+  "aborted",
   "awaiting-enrollment",
   "blocked",
   "cancelled",
@@ -141,6 +177,10 @@ const outcomes = new Set<RunAuditOutcome>([
   "conflict",
   "correction",
   "failed",
+  "final-fix",
+  "final-review-findings",
+  "final-review-passed",
+  "needs-human-fix",
   "partial",
   "ready-for-final-review",
   "stale-continuation",
@@ -153,24 +193,6 @@ function configurationError(code: string, message: string): ConfigurationError {
 
 function infrastructureError(code: string, message: string): InfrastructureError {
   return new InfrastructureError([{ code, message }]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactShape(
-  value: unknown,
-  required: string[],
-  optional: string[] = [],
-): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const keys = Object.keys(value);
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    keys.every((key) => allowed.has(key))
-  );
 }
 
 function validDate(value: unknown): value is string {
@@ -204,10 +226,10 @@ function validTicketEvidence(value: unknown): value is RunAuditTicketEvidence {
     typeof value.sessionId !== "string" ||
     !sessionIdPattern.test(value.sessionId) ||
     (value.commit !== null &&
-      (typeof value.commit !== "string" || !gitShaPattern.test(value.commit))) ||
+      !isGitObjectId(value.commit)) ||
     (value.reviewHead !== null &&
       (typeof value.reviewHead !== "string" ||
-        !gitShaPattern.test(value.reviewHead))) ||
+        !isGitObjectId(value.reviewHead))) ||
     (value.verificationHash !== null &&
       (typeof value.verificationHash !== "string" ||
         !hashPattern.test(value.verificationHash))) ||
@@ -219,6 +241,61 @@ function validTicketEvidence(value: unknown): value is RunAuditTicketEvidence {
     validReceipt(value.skills.codeReview) &&
     validReceipt(value.skills.implement) &&
     validReceipt(value.skills.tdd)
+  );
+}
+
+function validReviewExecution(value: unknown): value is RunAuditReviewExecution {
+  return (
+    hasExactShape(value, ["receiptId", "sessionId"]) &&
+    typeof value.receiptId === "string" &&
+    opaqueIdPattern.test(value.receiptId) &&
+    typeof value.sessionId === "string" &&
+    sessionIdPattern.test(value.sessionId)
+  );
+}
+
+function validReviewEvidence(value: unknown): value is RunAuditReviewEvidence {
+  if (
+    !hasExactShape(value, [
+      "axes",
+      "findingCodes",
+      "fix",
+      "phase",
+      "verificationHash",
+    ]) ||
+    !new Set([
+      "fix-1",
+      "fix-2",
+      "needs-human-fix",
+      "passed",
+      "review-0",
+      "review-1",
+      "review-2",
+      "review-only",
+    ]).has(value.phase as string) ||
+    !Array.isArray(value.findingCodes) ||
+    !value.findingCodes.every(
+      (code) => typeof code === "string" && /^[A-Z][A-Z0-9_]{1,127}$/u.test(code),
+    ) ||
+    new Set(value.findingCodes).size !== value.findingCodes.length ||
+    (value.verificationHash !== null &&
+      (typeof value.verificationHash !== "string" ||
+        !hashPattern.test(value.verificationHash))) ||
+    (value.fix !== null && !validReviewExecution(value.fix))
+  ) {
+    return false;
+  }
+  if (value.axes === null) {
+    return value.fix !== null && value.verificationHash === null;
+  }
+  return (
+    value.fix === null &&
+    value.verificationHash !== null &&
+    hasExactShape(value.axes, ["Spec", "Standards"]) &&
+    validReviewExecution(value.axes.Spec) &&
+    validReviewExecution(value.axes.Standards) &&
+    value.axes.Spec.sessionId !== value.axes.Standards.sessionId &&
+    value.axes.Spec.receiptId !== value.axes.Standards.receiptId
   );
 }
 
@@ -238,7 +315,7 @@ function validateAuditEvidence(candidate: unknown): asserts candidate is RunAudi
         "tickets",
         "timing",
       ],
-      ["correctionOf"],
+      ["correctionOf", "review"],
     ) ||
     candidate.schemaVersion !== 1 ||
     typeof candidate.runId !== "string" ||
@@ -269,20 +346,24 @@ function validateAuditEvidence(candidate: unknown): asserts candidate is RunAudi
     !hashPattern.test(candidate.dependencies.runtimeSkills) ||
     !hasExactShape(candidate.heads, ["end", "reviewed", "start", "targetBase"]) ||
     typeof candidate.heads.start !== "string" ||
-    !gitShaPattern.test(candidate.heads.start) ||
+    !isGitObjectId(candidate.heads.start) ||
     typeof candidate.heads.end !== "string" ||
-    !gitShaPattern.test(candidate.heads.end) ||
+    !isGitObjectId(candidate.heads.end) ||
     typeof candidate.heads.targetBase !== "string" ||
-    !gitShaPattern.test(candidate.heads.targetBase) ||
+    !isGitObjectId(candidate.heads.targetBase) ||
     (candidate.heads.reviewed !== null &&
       (typeof candidate.heads.reviewed !== "string" ||
-        !gitShaPattern.test(candidate.heads.reviewed))) ||
+        !isGitObjectId(candidate.heads.reviewed))) ||
     !hasExactShape(candidate.timing, ["finishedAt", "startedAt"]) ||
     !validDate(candidate.timing.startedAt) ||
     !validDate(candidate.timing.finishedAt) ||
     Date.parse(candidate.timing.finishedAt) < Date.parse(candidate.timing.startedAt) ||
     !Array.isArray(candidate.tickets) ||
-    !candidate.tickets.every(validTicketEvidence)
+    !candidate.tickets.every(validTicketEvidence) ||
+    (candidate.review !== undefined && !validReviewEvidence(candidate.review)) ||
+    (candidate.review !== undefined &&
+      candidate.review.axes !== null &&
+      candidate.heads.reviewed === null)
   ) {
     throw configurationError(
       "AUDIT_EVIDENCE_INVALID",
@@ -310,6 +391,13 @@ function validateAuditEvidence(candidate: unknown): asserts candidate is RunAudi
     );
   }
   const sessions = candidate.tickets.map(({ sessionId }) => sessionId);
+  if (candidate.review?.axes) {
+    sessions.push(
+      candidate.review.axes.Spec.sessionId,
+      candidate.review.axes.Standards.sessionId,
+    );
+  }
+  if (candidate.review?.fix) sessions.push(candidate.review.fix.sessionId);
   if (new Set(sessions).size !== sessions.length) {
     throw configurationError(
       "AUDIT_SESSION_REUSED",
@@ -399,7 +487,7 @@ class AuditGitHubClient {
         `GitHub run audit ${method} failed with status ${response.status}.`,
       );
     }
-    const source = await response.text();
+    const source = await readBoundedGitHubResponseText(response);
     if (!source) return { data: null, headers: response.headers };
     try {
       return {
@@ -421,12 +509,6 @@ class AuditGitHubClient {
   post<T>(path: string, body: object): Promise<GitHubResponse<T>> {
     return this.request<T>("POST", path, body, [201]);
   }
-}
-
-function hasNextPage(headers: Headers): boolean {
-  return /(?:^|,)\s*<[^>]+>\s*;\s*rel="next"/iu.test(
-    headers.get("link") ?? "",
-  );
 }
 
 async function findBatchPullRequest(
@@ -454,7 +536,7 @@ async function findBatchPullRequest(
       }
       return match.number;
     }
-    if (response.data.length < 100 && !hasNextPage(response.headers)) {
+    if (response.data.length < 100 && !hasNextGitHubPage(response.headers)) {
       return undefined;
     }
   }

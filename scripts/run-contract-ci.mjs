@@ -33,7 +33,13 @@ for (const name of [
 
 const completed = spawnSync(
   process.execPath,
-  ["--test", "test/api-contract-ci.test.mjs"],
+  [
+    "--test",
+    "test/api-contract-ci.test.mjs",
+    "test/credential-broker.test.mjs",
+    "test/frontier.test.mjs",
+    "test/ticket-publish.test.mjs",
+  ],
   { stdio: "inherit" },
 );
 if (completed.status !== 0) {

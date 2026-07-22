@@ -4,9 +4,9 @@
 
 ## 当前可用边界
 
-本地 installer、GitHub resource 配置、runtime adapters、sandbox policy、ticket publication primitives、Final Review state machine、audit、credentialless CI 和 release evidence validators 已实现并有测试。managed `.github/workflows/sandcastle.yml` 中的 `sandcastle-queue workflow-host` 尚未实现，CLI 会把该命令作为未知命令返回 exit status 2。这个 fail closed 行为会阻止真实 Actions Batch 完成。
+本地 installer、GitHub resource 配置、runtime adapters、sandbox policy、ticket publication、Final Review、audit、credentialless CI、release evidence validators 和 `sandcastle-queue workflow-host` dispatcher 已实现并有合同测试。managed `.github/workflows/sandcastle.yml` 可路由 process、Final Review/Fix、abort、merged Batch finalize、remote doctor，以及 `accept-no-change` 和 `complete-no-change` 两个人工决定。
 
-在 `workflow-host` 有真实 dispatcher、候选 commit 的 credentialless gate 与 live E2E gate 都通过之前，只使用本地安装和检查能力。不要手工替换 workflow 中的命令，也不要上传伪造 evidence 来绕过 release gate。
+本地测试不等于远端验收。在候选 commit 的 credentialless gate、remote doctor、live E2E 和 dogfood gate 都取得真实成功证据前，不要把当前候选用于生产 Batch，也不要手工替换 workflow 命令或伪造 evidence 绕过 release gate。
 
 ## Quickstart
 
@@ -166,7 +166,7 @@ ANTHROPIC_AUTH_TOKEN=... \
 node /path/to/setup-sandcastle-queue/dist/cli.js doctor
 ```
 
-remote-doctor operation 只允许 dedicated `workflow_dispatch` job，使用 `fast` model 验证 credential、broker、sandbox、network policy、job permissions 和 artifact upload。成功 artifact 绑定 installation version、configuration hash 与 workflow SHA。当前 `workflow-host` 尚未实现，所以 managed workflow 不能真正执行 remote-doctor；本地 doctor 会保留失败或缺失诊断，不会把它当作通过。
+remote-doctor operation 只允许 dedicated `workflow_dispatch` job，使用 `fast` model 验证 credential、broker、sandbox、network policy、job permissions 和 artifact upload。权限证据从当前 checkout 的受管 workflow 精确解析 `remote-doctor` job 声明，并由实际 checkout 与 artifact upload 验证获准能力；GitHub 不提供 job token 的 effective permission map，而 remote doctor 的零写入合同也禁止用 issue/PR mutation 探测拒绝能力。成功 artifact 绑定 installation version、configuration hash 与 workflow SHA。dispatcher 和 artifact 路径已有本地合同测试，但当前候选尚未取得远端成功 artifact；本地 doctor 会保留失败或缺失诊断，不会把它当作通过。
 
 ## Batch 与 Ticket 状态
 
@@ -181,13 +181,15 @@ remote-doctor operation 只允许 dedicated `workflow_dispatch` job，使用 `fa
 
 `status --parent <issue>` 是只读入口。`start --parent <issue>` 先列出只缺 ownership label 的 enrollment candidates；维护者用 `--enroll 2,3` 或 `--enroll none` 固定选择，再确认返回的 `confirmationHash`。runner 不会因为 issue 内容或 ready label 自动补 ownership label。
 
-处理状态包括 `awaiting-enrollment`、`blocked`、`executable`、`published`、`waiting-no-change`、`checkpointed`、`failed` 与 `stale-continuation`。所有子票都关闭后才进入 Final Review。当前 Actions dispatcher 缺失，不要实际执行 start；否则 initialization 之后的 process job 会 fail closed。
+处理状态包括 `awaiting-enrollment`、`blocked`、`executable`、`published`、`waiting-no-change`、`checkpointed`、`failed` 与 `stale-continuation`。所有子票都关闭后才进入 Final Review。`start`、`continue` 和 `resume` 已接入 host dispatcher；在生产运行前，仍应先取得目标仓库的 remote doctor 与 candidate-bound gate 证据。
 
-## no-change 与 abort
+## no-change、abort 与 finalize
 
-Agent 没有产生 diff 时不会创建 empty commit，也不会自动关闭 Ticket。host 先记录 `waiting-no-change` candidate，维护者再通过人工 `workflow_dispatch` 接受理由。全部 Tickets 都是 no-change 时，Batch 进入 `completed-no-change`，不创建空 PR；父 PRD 需要独立的人工 completion decision。
+Agent 没有产生 diff 时不会创建 empty commit，也不会自动关闭 Ticket。host 先记录 `waiting-no-change` candidate，维护者再通过人工 `workflow_dispatch` 运行 `accept-no-change`，记录理由并关闭指定 Ticket。全部 Tickets 都是 no-change 时，Batch 进入 `completed-no-change`，不创建空 PR；父 PRD 只有在独立运行 `complete-no-change` 后才会关闭。完成记录与父 PRD 终态都可验证后，operation 才按 expected HEAD 删除 `sandcastle/active`；重试会验证同一 completion record 后幂等成功。
 
-abort 要求没有 active processing run。它校验 Batch、HEAD 和 draft PR，保留 Batch branch，关闭 draft PR，并重新打开由该 Batch 关闭但尚未进入默认分支的 Tickets。abort audit 使用不可变 decision records，跨 API 中断后可以继续同一个决定，不会无界重试。
+abort 要求没有 active processing run。它校验 Batch、HEAD 和 draft PR，保留 Batch branch，关闭 draft PR，并重新打开由该 Batch 关闭但尚未进入默认分支的 Tickets。abort audit 使用不可变 decision records，跨 API 中断后可以继续同一个决定，不会无界重试；completed audit 写入后按 expected HEAD 释放 `sandcastle/active`。
+
+有代码变更的 Batch 在 Final Review 通过时只把 draft PR 标记 ready，仍属于非终态，不能释放 active ref。PR merge 后，维护者通过人工 `workflow_dispatch` 运行 `finalize-batch`，并提供精确 `batch_id`、`expected_head` 与 `pull_request`。host 只有在 PR 为 `closed`、`merged`，且其 head branch 与 HEAD 精确匹配该 Batch 时才删除 `sandcastle/active`；ref 已不存在时幂等成功，ref 已属于其他 HEAD 时 fail closed。
 
 ## 安全模型
 
@@ -216,7 +218,7 @@ host 在 commit/push 前同时检查 tracked 与 untracked changes。发现 prot
 
 ### operation permissions
 
-workflow 顶层不授予权限，job 按 operation 单独声明。`process` 与 `final-fix` 可以写 contents、issues、pull requests 和 Actions；`review-only` 只读 contents，但可写 issues、pull requests 和 Actions；`abort` 只读 contents 与 Actions，可写 issues 和 pull requests；`remote-doctor` 只读 contents，只为 artifact upload 写 Actions，不授予 issue 或 pull request 权限。sandbox 发出的 capability request 一律拒绝。
+workflow 顶层不授予权限，job 按 operation 单独声明。`process` 与 `final-fix` 可以写 contents、issues、pull requests 和 Actions；`review-only` 可写 issues、pull requests 和 Actions，并仅为同步已验证的人工作业 HEAD 写 contents；`abort` 写 contents、issues 和 pull requests，并只读 Actions；`accept-no-change` 只读 contents 与 Actions，可写 issues；`complete-no-change` 写 contents 与 issues，并只读 Actions；`finalize-batch` 只写 contents、只读 pull requests，不授予 issues 或 Actions 权限；`remote-doctor` 只读 contents，只为 artifact upload 写 Actions，不授予 issue 或 pull request 权限。sandbox 发出的 capability request 一律拒绝。
 
 ### threat boundary
 
@@ -230,7 +232,7 @@ workflow 顶层不授予权限，job 按 operation 单独声明。`process` 与 
 | `python-uv` | `.python-version`、`pyproject.toml`、`uv.lock` | `uv sync --frozen`，所有命令带 `--frozen` | lock 必须包含 exact package versions |
 | `node-npm` | `.nvmrc` 或 exact `engines.node`、`package-lock.json` | `npm ci` | 只接受 lockfile v2/v3，package identity 必须匹配 |
 | `go-module` | `go.mod`，有 dependencies 时还需 `go.sum` | `go mod download`、`go mod verify` | `go` 与 `toolchain` 使用相同 exact patch，校验 sums |
-| `java-maven` | `.java-version`、`pom.xml`、Maven Wrapper | strict-checksum `dependency:go-offline` | JDK 21 exact patch、官方 exact Maven URL、SHA-256，拒绝 SNAPSHOT/range |
+| `java-maven` | `.java-version`、`pom.xml`、Maven Wrapper | strict-checksum `dependency:go-offline` | JDK 21 exact patch、首版 Maven 3.9.9 官方 URL/digest、checksum-enforcing wrapper，拒绝 SNAPSHOT/range |
 | `composite` | 至少两个内置 adapters | 按人工确认顺序 bootstrap，再执行全部 tests/verification | schema v1，记录每个 component exact version |
 | `custom` | project-owned config | 直接 `argv` bootstrap、tests、verification | schema v1、exact version、exact hosts，拒绝 shell 与 Docker escape |
 
@@ -302,7 +304,7 @@ rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade �
 - cumulative Final Review 完成，随后至少走过一次 Final Fix 或 human review-only 路径，最终 findings 为零；
 - audit timeline 能关联父 PRD、Tickets、sessions、skill receipts、commits、PR 与 runs，且明确不含 raw transcript 或 secrets。
 
-验证成功后保存的报告只包含受限 IDs、hashes、计数、拓扑和状态；任何额外目标 payload、重复身份、超时 checkpoint、stale legacy prerequisite 或不安全 audit 都会被丢弃并 fail closed。当前 `workflow-host` 仍未实现，也没有真实三票成功证据，因此不得把这个 gate 的合同测试记作 Batch dogfood 完成。
+验证成功后保存的报告只包含受限 IDs、hashes、计数、拓扑和状态；任何额外目标 payload、重复身份、超时 checkpoint、stale legacy prerequisite 或不安全 audit 都会被丢弃并 fail closed。当前没有真实三票成功证据，因此不得把 dispatcher 或 verifier 的合同测试记作 Batch dogfood 完成。
 
 ### stable `1.0.0` release gate
 
@@ -314,7 +316,7 @@ rollback 从目标 release 重新生成 candidate tree，并执行与 upgrade �
 - `RELEASE_NOTES.md` 随 package 分发，并作为 GitHub Release notes，覆盖支持边界、已知限制、安全模型和 `0.1.x` upgrade；
 - publish 后重新下载 npm package 与全部 GitHub Release assets 比较 SHA-256，并验证 GHCR pushed digest、tag target 与 release state。
 
-缺少任一真实 gate artifact 时 publish job 不可达。当前候选因 `workflow-host` 缺失而无法通过 remote doctor/live E2E 与 Batch dogfood，所以没有创建 tag、push、npm publish、GitHub Release 或 GHCR publish；版本号与 release notes 只表示待验证候选，不表示已经发布。
+缺少任一真实 gate artifact 时 publish job 不可达。当前候选尚未取得 remote doctor、live E2E、legacy dogfood 与 Batch dogfood 的远端成功证据，也没有创建 tag、push、npm publish、GitHub Release 或 GHCR publish；版本号与 release notes 只表示待验证候选，不表示已经发布。
 
 ### uninstall
 
@@ -340,7 +342,7 @@ target base 第一次变化可以进入一次 replacement review；再次变化�
 | `PENDING_PLAN_STALE` | repository state 已变化，重新生成 plan 并再次审阅 patch |
 | `MANAGED_FILE_DRIFT` | 不要覆盖，确认 drift 来源后走 upgrade conflict 或人工恢复 |
 | `GITHUB_*_MISSING` | 补齐 token、Environment resource 或人工 repository settings，再运行 full doctor |
-| `REMOTE_DOCTOR_MISSING` / `FAILED` / `STALE` | 检查 candidate binding 与 sanitized artifact；当前版本还需等待 `workflow-host` dispatcher |
+| `REMOTE_DOCTOR_MISSING` / `FAILED` / `STALE` | 检查 workflow run、candidate binding、job permissions 与 sanitized artifact，不要用本地合同测试替代远端 evidence |
 | `ENVIRONMENT_DRIFT` / `environment-drift` | 恢复 lock/runtime identity，重新 bootstrap，不要继续旧 continuation |
 | `PROTECTED_PATH_MODIFIED` | 从 Ticket diff 移除 control-plane 修改；需要升级时走 installer lifecycle |
 | `waiting-no-change` | 人工核对 spec 和原始 HEAD，再决定 accept-no-change |

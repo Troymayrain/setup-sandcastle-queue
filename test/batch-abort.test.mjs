@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 
 const batchId = "p1-aaaaaaaaaaaa-r9001";
@@ -80,6 +81,10 @@ test("abort preserves evidence and reopens only this Batch's unmerged Published 
     async readState() {
       return state;
     },
+    async releaseActiveBatch(head) {
+      assert.equal(head, expectedHead);
+      calls.push({ kind: "release-active" });
+    },
     async reopenTicket(number) {
       calls.push({ kind: "reopen", number });
       state.tickets.find((ticket) => ticket.number === number).state = "open";
@@ -91,7 +96,7 @@ test("abort preserves evidence and reopens only this Batch's unmerged Published 
   assert.equal(result.preservedBranch, branch);
   assert.deepEqual(
     calls.map(({ kind }) => kind),
-    ["audit", "close-pr", "reopen", "audit"],
+    ["audit", "close-pr", "reopen", "audit", "release-active"],
   );
   assert.deepEqual(
     state.abortRecords.map(({ stage }) => stage),
@@ -119,6 +124,7 @@ test("abort refuses every write while a processing run is active", async () => {
       async readState() {
         return state;
       },
+      releaseActiveBatch: noWrite,
       reopenTicket: noWrite,
     }),
     (error) => error.diagnostics?.[0]?.code === "BATCH_ABORT_ACTIVE_RUN",
@@ -133,6 +139,7 @@ test("abort resumes the same immutable decision after a cross-API crash", async 
   } = await import("../dist/index.js");
   const state = abortState();
   const mutations = [];
+  let releases = 0;
   let failAfterReopen = true;
   const runtime = {
     async appendAudit(record) {
@@ -154,6 +161,10 @@ test("abort resumes the same immutable decision after a cross-API crash", async 
     async readState() {
       return state;
     },
+    async releaseActiveBatch(head) {
+      assert.equal(head, expectedHead);
+      releases += 1;
+    },
     async reopenTicket(number) {
       mutations.push(`reopen:${number}`);
       state.tickets.find((ticket) => ticket.number === number).state = "open";
@@ -172,6 +183,157 @@ test("abort resumes the same immutable decision after a cross-API crash", async 
     "started",
     "completed",
   ]);
+  const retried = await abortBatch("/repository", options(), runtime);
+  assert.equal(retried.status, "already-aborted");
+  assert.equal(releases, 2);
   const rendered = renderBatchAbortRecord(state.abortRecords[1]);
   assert.deepEqual(parseBatchAbortRecord(rendered), state.abortRecords[1]);
+});
+
+test("workflow abort releases the exact active ref and retries after deletion", async () => {
+  const { runWorkflowAbort } = await import(
+    "../dist/workflow/abort-runtime.js"
+  );
+  let activeHead = expectedHead;
+  let pullState = "open";
+  let deletes = 0;
+  const comments = [];
+  const server = createServer(async (request, response) => {
+    let source = "";
+    for await (const chunk of request) source += chunk;
+    const body = source ? JSON.parse(source) : null;
+    response.setHeader("content-type", "application/json");
+    if (request.method === "GET" && request.url === "/repos/acme/widget") {
+      response.end('{"default_branch":"main"}');
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url ===
+        `/repos/acme/widget/git/ref/heads/${encodeURIComponent(branch)}`
+    ) {
+      response.end(JSON.stringify({ object: { sha: expectedHead } }));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url === "/repos/acme/widget/git/ref/heads/main"
+    ) {
+      response.end(JSON.stringify({ object: { sha: "c".repeat(40) } }));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url === "/repos/acme/widget/git/ref/heads/sandcastle%2Factive"
+    ) {
+      if (activeHead) {
+        response.end(JSON.stringify({ object: { sha: activeHead } }));
+      } else {
+        response.statusCode = 404;
+        response.end('{"message":"Not Found"}');
+      }
+      return;
+    }
+    if (
+      request.method === "DELETE" &&
+      request.url === "/repos/acme/widget/git/refs/heads/sandcastle%2Factive"
+    ) {
+      deletes += 1;
+      activeHead = null;
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+    if (
+      request.url === "/repos/acme/widget/pulls/44" &&
+      request.method === "GET"
+    ) {
+      response.end(
+        JSON.stringify({
+          draft: true,
+          head: { ref: branch, sha: expectedHead },
+          merged: false,
+          number: 44,
+          state: pullState,
+        }),
+      );
+      return;
+    }
+    if (
+      request.url === "/repos/acme/widget/pulls/44" &&
+      request.method === "PATCH"
+    ) {
+      pullState = body.state;
+      response.end(JSON.stringify({ number: 44, state: pullState }));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url ===
+        "/repos/acme/widget/issues?state=all&sort=created&direction=asc&per_page=100&page=1"
+    ) {
+      response.end('[{"body":"# Parent","number":1,"state":"open"}]');
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url?.startsWith(
+        "/repos/acme/widget/actions/workflows/sandcastle.yml/runs?",
+      )
+    ) {
+      response.end('{"workflow_runs":[]}');
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      request.url ===
+        "/repos/acme/widget/issues/44/comments?per_page=100&page=1"
+    ) {
+      response.end(JSON.stringify(comments));
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      request.url === "/repos/acme/widget/issues/44/comments"
+    ) {
+      const comment = { body: body.body, id: 5000 + comments.length };
+      comments.push(comment);
+      response.statusCode = 201;
+      response.end(JSON.stringify(comment));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ method: request.method, url: request.url }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const workflowOptions = {
+    actor: "maintainer",
+    batchId,
+    environment: {
+      GITHUB_API_URL: `http://127.0.0.1:${address.port}`,
+      GITHUB_REPOSITORY: "acme/widget",
+      GITHUB_TOKEN: "test-token",
+    },
+    expectedHead,
+    pullRequest: 44,
+    reason: "Stopping this Batch for a controlled recovery.",
+    repositoryPath: "/repository",
+    runId: "9200",
+  };
+  try {
+    const result = await runWorkflowAbort(workflowOptions);
+    assert.equal(result.status, "aborted");
+    assert.equal(pullState, "closed");
+    assert.equal(activeHead, null);
+    assert.equal(deletes, 1);
+    assert.equal(comments.length, 2);
+
+    const retried = await runWorkflowAbort(workflowOptions);
+    assert.equal(retried.status, "already-aborted");
+    assert.equal(deletes, 1);
+    assert.equal(comments.length, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
