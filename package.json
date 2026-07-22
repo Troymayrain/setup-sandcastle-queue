@@ -32,7 +32,8 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "ajv": "8.20.0"
+    "ajv": "8.20.0",
+    "libsodium-wrappers": "0.8.4"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

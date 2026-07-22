@@ -21,6 +21,18 @@ export { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
 export { proposeRuntime } from "./runtime/detect.js";
 export type { BuiltInAdapter, RuntimeProposal } from "./runtime/detect.js";
+export {
+  applyGitHubConfiguration,
+  previewGitHubConfiguration,
+  validateGitHubResourceConfirmation,
+} from "./github/configure.js";
+export type {
+  GitHubConfigurationApplyResult,
+  GitHubConfigurationDiagnostic,
+  GitHubConfigurationPreview,
+  GitHubConfigurationResource,
+  GitHubConfirmationCategory,
+} from "./github/configure.js";
 export type {
   AssetPrecondition,
   InstallationState,

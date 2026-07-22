@@ -14,6 +14,10 @@ import {
 } from "./installer/plan.js";
 import { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
 import { proposeRuntime } from "./runtime/detect.js";
+import {
+  applyGitHubConfiguration,
+  previewGitHubConfiguration,
+} from "./github/configure.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -123,6 +127,20 @@ async function main(): Promise<void> {
     const config = await readProjectConfig(configPath);
     const result = resolveModelRoles(config);
     writeJson({ command: "resolve-models", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "configure-github" && option === "--config" && configPath) {
+    const config = await readProjectConfig(configPath);
+    const preview = await previewGitHubConfiguration(process.cwd(), config);
+    const result = arguments_.includes("--confirm-resources")
+      ? await applyGitHubConfiguration(
+          preview,
+          optionValue("--confirm-resources"),
+        )
+      : preview;
+    writeJson({ command: "configure-github", ok: true, result, version: VERSION });
     process.exitCode = 0;
   }
 }
