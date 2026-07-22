@@ -17,6 +17,7 @@ export { doctor } from "./doctor.js";
 export type {
   DoctorCheck,
   DoctorDiagnostic,
+  DoctorOptions,
   DoctorResult,
 } from "./doctor.js";
 export {
@@ -350,5 +351,22 @@ export type {
   LiveE2EReleaseGateInput,
   LiveE2EReleaseGateResult,
 } from "./release/live-e2e.js";
+export {
+  ANTHROPIC_CONTRACT_CAPABILITIES,
+  CREDENTIALLESS_FIXTURE_IDS,
+  evaluateCredentiallessFixtureMatrix,
+  FIXTURE_LIFECYCLE_STEPS,
+  GITHUB_CONTRACT_CAPABILITIES,
+  readCredentiallessFixtureMatrixInput,
+} from "./ci/fixture-matrix.js";
+export type {
+  CredentiallessContractEvidence,
+  CredentiallessFixtureDiagnostic,
+  CredentiallessFixtureEvidence,
+  CredentiallessFixtureId,
+  CredentiallessFixtureMatrixInput,
+  CredentiallessFixtureMatrixResult,
+  FixtureLifecycleStep,
+} from "./ci/fixture-matrix.js";
 export { TEMPLATE_VERSION } from "./installer/templates.js";
 export { VERSION } from "./version.js";

@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Typecheck and full tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+  api-contracts:
+    name: Local GitHub and Anthropic contracts
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Exercise local API contracts
+        run: >-
+          npm run test:contracts --
+          --candidate-sha "$GITHUB_SHA"
+          --output "$RUNNER_TEMP/contracts.json"
+      - name: Preserve contract evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: credentialless-api-contracts
+          path: ${{ runner.temp }}/contracts.json
+          if-no-files-found: error
+          retention-days: 30
+
+  fixture-matrix:
+    name: Fixture ${{ matrix.fixture }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture:
+          - mixed-python-pip-node-npm
+          - python-uv
+          - node-npm
+          - go-module
+          - java-maven
+          - custom
+          - existing-install
+          - adopt
+          - upgrade
+    steps:
+      - name: Check out the candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Build and execute the isolated fixture container
+        shell: bash
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "FIXTURE=$FIXTURE" \
+            --tag "sandcastle-fixture:$FIXTURE" \
+            --file test/fixtures/Dockerfile \
+            test/fixtures
+          docker run --rm "sandcastle-fixture:$FIXTURE"
+      - name: Run the complete credentialless lifecycle
+        env:
+          SANDCASTLE_FIXTURE_CONTAINER_BUILT: "true"
+        run: >-
+          node scripts/run-credentialless-fixture.mjs
+          --fixture "${{ matrix.fixture }}"
+          --candidate-sha "$GITHUB_SHA"
+          --output "$RUNNER_TEMP/${{ matrix.fixture }}.json"
+      - name: Preserve fixture evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: credentialless-fixture-${{ matrix.fixture }}
+          path: ${{ runner.temp }}/${{ matrix.fixture }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  credentialless-gate:
+    name: Verify the complete credentialless matrix
+    if: ${{ always() }}
+    needs:
+      - quality
+      - api-contracts
+      - fixture-matrix
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out the candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Download available credentialless evidence
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: credentialless-*
+          path: ${{ runner.temp }}/credentialless-evidence
+          merge-multiple: true
+      - name: Assemble candidate-bound evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixtures='[]'
+          contracts='{}'
+          while IFS= read -r evidence_file; do
+            if fixture="$(jq -c -e 'select(.fixture and .schemaVersion == 1)' "$evidence_file" 2>/dev/null)"; then
+              fixtures="$(jq -cn --argjson current "$fixtures" --argjson item "$fixture" '$current + [$item]')"
+            elif contract="$(jq -c -e 'select(.contracts and .schemaVersion == 1) | .contracts' "$evidence_file" 2>/dev/null)"; then
+              contracts="$contract"
+            fi
+          done < <(find "$RUNNER_TEMP/credentialless-evidence" -type f -name '*.json' -print 2>/dev/null || true)
+          jq -cn \
+            --arg candidateSha "$GITHUB_SHA" \
+            --argjson contracts "$contracts" \
+            --argjson evidence "$fixtures" \
+            '{
+              candidateSha: $candidateSha,
+              contracts: $contracts,
+              evidence: $evidence,
+              schemaVersion: 1
+            }' > "$RUNNER_TEMP/fixture-matrix-input.json"
+      - name: Verify fixture and contract evidence
+        id: verify
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          node dist/cli.js verify-fixture-matrix \
+            --input "$RUNNER_TEMP/fixture-matrix-input.json" \
+            | tee "$RUNNER_TEMP/fixture-matrix-gate.json"
+      - name: Upload the reviewable credentialless gate report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sandcastle-credentialless-${{ github.sha }}
+          path: ${{ runner.temp }}/fixture-matrix-gate.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Enforce the credentialless gate
+        if: ${{ always() && steps.verify.outcome != 'success' }}
+        run: exit 4

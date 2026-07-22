@@ -11,6 +11,7 @@ import {
 import {
   inspectGitHubEnvironmentResources,
   previewGitHubConfiguration,
+  resolveGitHubRepository,
 } from "./github/configure.js";
 import { sha256 } from "./hash.js";
 import { resolveRepositoryRoot } from "./installer/plan.js";
@@ -54,8 +55,13 @@ export interface DoctorDiagnostic {
 export interface DoctorResult {
   checks: DoctorCheck[];
   diagnostics: DoctorDiagnostic[];
+  mode: "full" | "offline";
   ok: boolean;
   repository: string;
+}
+
+export interface DoctorOptions {
+  mode?: "full" | "offline";
 }
 
 interface InstallationManifest {
@@ -595,6 +601,7 @@ export async function doctor(
   repository: string,
   configPath?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  options: DoctorOptions = {},
 ): Promise<DoctorResult> {
   const root = await resolveRepositoryRoot(repository);
   const config = await readProjectConfig(
@@ -621,6 +628,16 @@ export async function doctor(
 
   diagnostics.push(...(await checkWorkflow(root)));
   checks.push(checkResult("workflow", diagnostics));
+
+  if (options.mode === "offline") {
+    return {
+      checks,
+      diagnostics,
+      mode: "offline",
+      ok: diagnostics.length === 0,
+      repository: await resolveGitHubRepository(root),
+    };
+  }
 
   const github = await previewGitHubConfiguration(root, config, environment);
   for (const label of github.resources.filter(({ kind }) => kind === "label")) {
@@ -740,6 +757,7 @@ export async function doctor(
   return {
     checks,
     diagnostics,
+    mode: "full",
     ok: diagnostics.length === 0,
     repository: github.repository,
   };

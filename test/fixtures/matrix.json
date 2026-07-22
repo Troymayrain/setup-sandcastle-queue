@@ -1,0 +1,14 @@
+{
+  "fixtures": [
+    "mixed-python-pip-node-npm",
+    "python-uv",
+    "node-npm",
+    "go-module",
+    "java-maven",
+    "custom",
+    "existing-install",
+    "adopt",
+    "upgrade"
+  ],
+  "schemaVersion": 1
+}

@@ -76,6 +76,10 @@ import {
   evaluateLiveE2EReleaseGate,
   readLiveE2EReleaseGateInput,
 } from "./release/live-e2e.js";
+import {
+  evaluateCredentiallessFixtureMatrix,
+  readCredentiallessFixtureMatrixInput,
+} from "./ci/fixture-matrix.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -805,10 +809,30 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "verify-fixture-matrix") {
+    const inputPath = optionValue("--input");
+    if (!inputPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "verify-fixture-matrix requires --input <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const input = await readCredentiallessFixtureMatrixInput(inputPath);
+    const result = evaluateCredentiallessFixtureMatrix(input);
+    writeJson({ command, ok: result.ok, result, version: VERSION });
+    process.exitCode = result.ok ? 0 : 4;
+    return;
+  }
+
   if (command === "doctor") {
     const result = await doctor(
       process.cwd(),
       optionValue("--config"),
+      process.env,
+      { mode: arguments_.includes("--offline") ? "offline" : "full" },
     );
     writeJson({ command: "doctor", ok: result.ok, result, version: VERSION });
     process.exitCode = result.ok ? 0 : 2;

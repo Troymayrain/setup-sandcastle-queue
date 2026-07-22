@@ -221,13 +221,17 @@ async function startGitHubServer({
   };
 }
 
-function runDoctor(repository, environment) {
+function runDoctor(repository, environment, extraArguments = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliPath.pathname, "doctor"], {
+    const child = spawn(
+      process.execPath,
+      [cliPath.pathname, "doctor", ...extraArguments],
+      {
       cwd: repository,
       env: environment,
       stdio: ["ignore", "pipe", "pipe"],
-    });
+      },
+    );
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -312,6 +316,32 @@ test("doctor reports a complete installation through read-only local and GitHub 
   } finally {
     await github.close();
   }
+});
+
+test("offline doctor validates only local installation boundaries without credentials or network", async () => {
+  const repository = createRepository();
+  install(repository, writeConfig());
+  const before = treeHash(repository);
+
+  const result = await runDoctor(repository, { ...process.env }, ["--offline"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.ok, true);
+  assert.equal(output.result.mode, "offline");
+  assert.deepEqual(output.result.diagnostics, []);
+  assert.deepEqual(
+    output.result.checks.map(({ id, status }) => ({ id, status })),
+    [
+      { id: "config-schema", status: "pass" },
+      { id: "managed-files", status: "pass" },
+      { id: "runtime-skills", status: "pass" },
+      { id: "runtime", status: "pass" },
+      { id: "commands", status: "pass" },
+      { id: "workflow", status: "pass" },
+    ],
+  );
+  assert.equal(treeHash(repository), before);
 });
 
 test("doctor reports a missing remote doctor result with a dispatch next step", async () => {
