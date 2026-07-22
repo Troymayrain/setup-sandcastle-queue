@@ -206,6 +206,23 @@ export type {
   FinalReviewTicketState,
   MarkPullRequestReadyInput,
 } from "./final-review/run.js";
+export {
+  acceptHumanFinalFix,
+  createFinalReviewProgress,
+  executeFinalReviewStep,
+} from "./final-review/fix.js";
+export type {
+  AutomaticFinalFixInput,
+  AutomaticFinalFixResult,
+  FinalReviewAxisExecution,
+  FinalReviewCycleReviewInput,
+  FinalReviewCycleReviewResult,
+  FinalReviewCycleRuntime,
+  FinalReviewHistoryEvent,
+  FinalReviewPhase,
+  FinalReviewProgress,
+  HumanFinalFixInput,
+} from "./final-review/fix.js";
 export type {
   FrontierResult,
   FrontierTicket,
