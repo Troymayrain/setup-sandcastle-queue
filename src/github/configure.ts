@@ -237,6 +237,12 @@ function parseGitHubRepository(remote: string): string {
   );
 }
 
+export async function resolveGitHubRepository(
+  repositoryPath: string,
+): Promise<string> {
+  return parseGitHubRepository(await gitRemote(repositoryPath));
+}
+
 async function listLabels(
   client: GitHubClient,
   repository: string,
@@ -278,7 +284,7 @@ export async function previewGitHubConfiguration(
       "GITHUB_TOKEN is required to inspect GitHub repository configuration.",
     );
   }
-  const repository = parseGitHubRepository(await gitRemote(repositoryPath));
+  const repository = await resolveGitHubRepository(repositoryPath);
   const client = new GitHubClient(
     environment.GITHUB_API_URL ?? "https://api.github.com",
     githubToken,

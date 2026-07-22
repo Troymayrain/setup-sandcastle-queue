@@ -23,7 +23,21 @@ export {
   resumePendingInstallPlan,
   savePendingInstallPlan,
 } from "./installer/plan.js";
-export { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
+export {
+  createAdoptionPreview,
+  inspectLegacyQuiescence,
+  parseLegacyPullRequestOptOut,
+} from "./installer/adopt.js";
+export type {
+  AdoptionMigration,
+  AdoptionPreview,
+  LegacyQuiescence,
+} from "./installer/adopt.js";
+export {
+  applyAdoptPlan,
+  applyInstallPlan,
+  readInstallPlan,
+} from "./installer/apply.js";
 export type { InstallResult } from "./installer/apply.js";
 export { proposeRuntime } from "./runtime/detect.js";
 export type { BuiltInAdapter, RuntimeProposal } from "./runtime/detect.js";
@@ -42,7 +56,10 @@ export type {
   GitHubEnvironmentResourceState,
 } from "./github/configure.js";
 export type {
+  AdoptionPlanMetadata,
+  AdoptionSkillExtension,
   AssetPrecondition,
+  CreateInstallPlanOptions,
   InstallationState,
   InstallPlan,
   InstallPlanAsset,

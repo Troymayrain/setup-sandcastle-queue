@@ -29,6 +29,7 @@ import {
 } from "./plan.js";
 import {
   renderCandidateAssets,
+  RUNTIME_WRAPPER_CONTENT,
   TEMPLATE_VERSION,
   type CandidateAsset,
 } from "./templates.js";
@@ -59,11 +60,72 @@ function planWithoutHash(plan: Record<string, unknown>): Record<string, unknown>
   return rest;
 }
 
+function assertAdoptionMetadata(candidate: unknown): void {
+  if (!isRecord(candidate)) {
+    throw planError("ADOPTION_PLAN_INVALID", "Adoption metadata has an invalid shape.");
+  }
+  const expectedKeys = [
+    "integrationPullRequestOptOut",
+    "runtimeWrapper",
+    "schemaVersion",
+    "skillExtensions",
+  ];
+  if (
+    Object.keys(candidate).sort().join("\u0000") !==
+      expectedKeys.join("\u0000") ||
+    candidate.schemaVersion !== 1 ||
+    typeof candidate.runtimeWrapper !== "string" ||
+    !candidate.runtimeWrapper.startsWith(RUNTIME_WRAPPER_CONTENT.trimEnd()) ||
+    !Array.isArray(candidate.integrationPullRequestOptOut) ||
+    !Array.isArray(candidate.skillExtensions)
+  ) {
+    throw planError("ADOPTION_PLAN_INVALID", "Adoption metadata has an invalid shape.");
+  }
+  const optOut = candidate.integrationPullRequestOptOut;
+  if (
+    optOut.some(
+      (value) =>
+        typeof value !== "number" ||
+        !Number.isSafeInteger(value) ||
+        value <= 0,
+    ) ||
+    new Set(optOut).size !== optOut.length ||
+    optOut.some((value, index) => index > 0 && value <= optOut[index - 1]!)
+  ) {
+    throw planError("ADOPTION_PLAN_INVALID", "Adoption PR opt-out metadata is invalid.");
+  }
+  const supportedSkills = ["code-review", "implement", "tdd"];
+  const seenSkills = new Set<string>();
+  for (const extension of candidate.skillExtensions) {
+    if (
+      !isRecord(extension) ||
+      Object.keys(extension).sort().join("\u0000") !==
+        ["content", "originalSha256", "skill"].join("\u0000") ||
+      typeof extension.content !== "string" ||
+      typeof extension.originalSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(extension.originalSha256) ||
+      typeof extension.skill !== "string" ||
+      !supportedSkills.includes(extension.skill) ||
+      seenSkills.has(extension.skill) ||
+      (extension.content.length > 0 &&
+        (!/sandcastle/iu.test(extension.content) ||
+          !candidate.runtimeWrapper.includes(extension.content)))
+    ) {
+      throw planError(
+        "ADOPTION_PLAN_INVALID",
+        "Adoption skill migration metadata is invalid.",
+      );
+    }
+    seenSkills.add(extension.skill);
+  }
+}
+
 function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPlan {
   if (!isRecord(candidate)) {
     throw planError("PLAN_INVALID", "Confirmed installation plan has an invalid shape.");
   }
   const expectedKeys = [
+    ...(candidate.adoption === undefined ? [] : ["adoption"]),
     "assets",
     "config",
     "installationState",
@@ -95,6 +157,10 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
     throw planError("PLAN_INVALID", "Confirmed installation plan has an invalid shape.");
   }
 
+  if (candidate.adoption !== undefined) {
+    assertAdoptionMetadata(candidate.adoption);
+  }
+
   if (sha256(canonicalJson(planWithoutHash(candidate))) !== candidate.planHash) {
     throw planError(
       "PLAN_HASH_MISMATCH",
@@ -103,7 +169,12 @@ function assertPlanEnvelope(candidate: unknown): asserts candidate is InstallPla
   }
 
   const config = validateProjectConfig(candidate.config);
-  const renderedAssets = renderCandidateAssets(config).map((asset) => ({
+  const adoption = candidate.adoption as
+    | { runtimeWrapper: string }
+    | undefined;
+  const renderedAssets = renderCandidateAssets(config, {
+    runtimeWrapper: adoption?.runtimeWrapper,
+  }).map((asset) => ({
     ownership: asset.ownership,
     path: asset.path,
     sha256: sha256(asset.content),
@@ -247,6 +318,7 @@ async function applyCandidateAssets(
   repositoryRoot: string,
   assets: CandidateAsset[],
   expectedPreconditions: AssetPrecondition[],
+  overwrittenProjectPaths: ReadonlySet<string> = new Set(),
 ): Promise<string[]> {
   const changedAssets: CandidateAsset[] = [];
   for (const [index, asset] of assets.entries()) {
@@ -258,7 +330,11 @@ async function applyCandidateAssets(
         "Target assets changed after the installation plan was created.",
       );
     }
-    if (asset.ownership === "project" && current.type === "file") {
+    if (
+      asset.ownership === "project" &&
+      current.type === "file" &&
+      !overwrittenProjectPaths.has(asset.path)
+    ) {
       continue;
     }
     if (current.sha256 !== sha256(asset.content)) {
@@ -352,6 +428,12 @@ export async function applyInstallPlan(
       "Installation requires explicit confirmation of the exact plan hash.",
     );
   }
+  if (plan.adoption) {
+    throw planError(
+      "ADOPTION_PLAN_REQUIRES_ADOPT",
+      "An adoption plan must be applied through the adopt lifecycle.",
+    );
+  }
   if (plan.installationState === "unmanaged") {
     throw planError(
       "UNMANAGED_INSTALLATION",
@@ -380,6 +462,57 @@ export async function applyInstallPlan(
     root,
     assets,
     plan.preconditions.assets,
+  );
+  return {
+    changed: filesWritten.length > 0,
+    filesWritten,
+    planHash: plan.planHash,
+  };
+}
+
+export async function applyAdoptPlan(
+  repository: string,
+  plan: InstallPlan,
+  confirmation: string,
+): Promise<InstallResult> {
+  assertPlanEnvelope(plan);
+  if (!plan.adoption || plan.installationState !== "unmanaged") {
+    throw planError(
+      "ADOPTION_PLAN_INVALID",
+      "The confirmed plan is not an unmanaged adoption plan.",
+    );
+  }
+  if (confirmation !== plan.planHash) {
+    throw planError(
+      "PLAN_NOT_CONFIRMED",
+      "Adoption requires explicit confirmation of the exact plan hash.",
+    );
+  }
+
+  const root = await resolveRepositoryRoot(repository);
+  const assets = renderCandidateAssets(plan.config, {
+    runtimeWrapper: plan.adoption.runtimeWrapper,
+  });
+  const actualPreconditions = await Promise.all(
+    assets.map((asset) => readAssetPrecondition(root, asset)),
+  );
+  if (
+    !plan.preconditions.assets.every((expected, index) => {
+      const actual = actualPreconditions[index];
+      return actual !== undefined && preconditionsMatch(expected, actual);
+    })
+  ) {
+    throw planError(
+      "PLAN_STALE",
+      "Target assets changed after the adoption plan was created.",
+    );
+  }
+
+  const filesWritten = await applyCandidateAssets(
+    root,
+    assets,
+    plan.preconditions.assets,
+    new Set([".sandcastle/config.json"]),
   );
   return {
     changed: filesWritten.length > 0,

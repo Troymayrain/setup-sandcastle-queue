@@ -32,6 +32,10 @@ export interface CandidateAsset {
   path: string;
 }
 
+export interface CandidateRenderOptions {
+  runtimeWrapper?: string;
+}
+
 const workflow = `# Managed by setup-sandcastle-queue. Use the installer to update this file.
 name: Sandcastle Queue
 
@@ -56,6 +60,10 @@ interface SnapshotFile {
 
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runtimeSkillsRoot = join(packageRoot, "vendor", "runtime-skills");
+export const RUNTIME_WRAPPER_CONTENT = readFileSync(
+  join(packageRoot, "vendor", "sandcastle-runtime", "SKILL.md"),
+  "utf8",
+);
 const runtimeSkillNames = ["code-review", "implement", "tdd"] as const;
 const upstreamSkillPaths: Record<(typeof runtimeSkillNames)[number], string> = {
   "code-review": "skills/engineering/code-review/SKILL.md",
@@ -100,7 +108,10 @@ function renderRuntimeSkillAssets(): CandidateAsset[] {
   return assets;
 }
 
-export function renderCandidateAssets(config: ProjectConfig): CandidateAsset[] {
+export function renderCandidateAssets(
+  config: ProjectConfig,
+  options: CandidateRenderOptions = {},
+): CandidateAsset[] {
   const configContent = canonicalJson(config);
   const runtimeSkillAssets = renderRuntimeSkillAssets();
   const lockContent = canonicalJson({
@@ -126,10 +137,7 @@ export function renderCandidateAssets(config: ProjectConfig): CandidateAsset[] {
     join(packageRoot, "assets", "project-docs", "sandcastle-queue.md"),
     "utf8",
   );
-  const runtimeWrapper = readFileSync(
-    join(packageRoot, "vendor", "sandcastle-runtime", "SKILL.md"),
-    "utf8",
-  );
+  const runtimeWrapper = options.runtimeWrapper ?? RUNTIME_WRAPPER_CONTENT;
   const baseAssets: CandidateAsset[] = [
     ...runtimeSkillAssets,
     {

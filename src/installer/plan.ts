@@ -44,7 +44,25 @@ export interface AssetPrecondition {
   type: "absent" | "file";
 }
 
+export interface AdoptionSkillExtension {
+  content: string;
+  originalSha256: string;
+  skill: "code-review" | "implement" | "tdd";
+}
+
+export interface AdoptionPlanMetadata {
+  integrationPullRequestOptOut: number[];
+  runtimeWrapper: string;
+  schemaVersion: 1;
+  skillExtensions: AdoptionSkillExtension[];
+}
+
+export interface CreateInstallPlanOptions {
+  adoption?: AdoptionPlanMetadata;
+}
+
 export interface InstallPlan {
+  adoption?: AdoptionPlanMetadata;
   assets: InstallPlanAsset[];
   config: ProjectConfig;
   installationState: InstallationState;
@@ -421,6 +439,7 @@ async function renderPatch(
 export async function createInstallPlan(
   repository: string,
   config: ProjectConfig,
+  options: CreateInstallPlanOptions = {},
 ): Promise<InstallPlan> {
   const normalizedConfig = JSON.parse(canonicalJson(config)) as ProjectConfig;
   const root = await resolveRepositoryRoot(repository);
@@ -428,13 +447,16 @@ export async function createInstallPlan(
     git(root, ["rev-parse", "HEAD"]),
     git(root, ["ls-files", "--stage", "-z"]),
   ]);
-  const assets = renderCandidateAssets(normalizedConfig);
+  const assets = renderCandidateAssets(normalizedConfig, {
+    runtimeWrapper: options.adoption?.runtimeWrapper,
+  });
   const [installationState, preconditions, patch] = await Promise.all([
     determineInstallationState(root, assets),
     Promise.all(assets.map((asset) => readAssetPrecondition(root, asset))),
     renderPatch(root, assets),
   ]);
   const planWithoutHash = {
+    ...(options.adoption ? { adoption: options.adoption } : {}),
     assets: assets.map((asset) => ({
       ownership: asset.ownership,
       path: asset.path,

@@ -12,13 +12,22 @@ import {
   resumePendingInstallPlan,
   savePendingInstallPlan,
 } from "./installer/plan.js";
-import { applyInstallPlan, readInstallPlan } from "./installer/apply.js";
+import {
+  applyAdoptPlan,
+  applyInstallPlan,
+  readInstallPlan,
+} from "./installer/apply.js";
 import { proposeRuntime } from "./runtime/detect.js";
 import {
   applyGitHubConfiguration,
   previewGitHubConfiguration,
 } from "./github/configure.js";
 import { doctor } from "./doctor.js";
+import {
+  createAdoptionPreview,
+  inspectLegacyQuiescence,
+  parseLegacyPullRequestOptOut,
+} from "./installer/adopt.js";
 
 const arguments_ = process.argv.slice(2);
 const [command, option, configPath] = arguments_;
@@ -128,6 +137,68 @@ async function main(): Promise<void> {
     const config = await readProjectConfig(configPath);
     const result = resolveModelRoles(config);
     writeJson({ command: "resolve-models", ok: true, result, version: VERSION });
+    process.exitCode = 0;
+    return;
+  }
+
+  if (command === "adopt") {
+    const adoptionPlanPath = optionValue("--plan");
+    const adoptionConfirmation = optionValue("--confirm");
+    if (adoptionPlanPath || adoptionConfirmation) {
+      if (!adoptionPlanPath || !adoptionConfirmation) {
+        throw new ConfigurationError([
+          {
+            code: "MISSING_ARGUMENT",
+            message: "adopt apply requires --plan <path> and --confirm <planHash>.",
+            path: "",
+          },
+        ]);
+      }
+      const plan = await readInstallPlan(adoptionPlanPath);
+      if (!plan.adoption) {
+        throw new ConfigurationError([
+          {
+            code: "ADOPTION_PLAN_INVALID",
+            message: "The confirmed plan is not an adoption plan.",
+            path: "",
+          },
+        ]);
+      }
+      const quiescence = await inspectLegacyQuiescence(
+        process.cwd(),
+        plan.adoption.integrationPullRequestOptOut,
+      );
+      const result = await applyAdoptPlan(
+        process.cwd(),
+        plan,
+        adoptionConfirmation,
+      );
+      writeJson({
+        command: "adopt",
+        ok: true,
+        result: { ...result, quiescence },
+        version: VERSION,
+      });
+      process.exitCode = 0;
+      return;
+    }
+    const adoptionConfigPath = optionValue("--config");
+    if (!adoptionConfigPath) {
+      throw new ConfigurationError([
+        {
+          code: "MISSING_ARGUMENT",
+          message: "adopt requires --config <path>.",
+          path: "",
+        },
+      ]);
+    }
+    const config = await readProjectConfig(adoptionConfigPath);
+    const result = await createAdoptionPreview(
+      process.cwd(),
+      config,
+      parseLegacyPullRequestOptOut(optionValue("--confirm-pr-opt-out")),
+    );
+    writeJson({ command: "adopt", ok: true, result, version: VERSION });
     process.exitCode = 0;
     return;
   }
