@@ -103,6 +103,7 @@ function writePythonPip(repository) {
 
 function writePythonUv(repository) {
   writeFileSync(join(repository, ".python-version"), "3.12.8\n");
+  mkdirSync(join(repository, "bin"));
   writeFileSync(
     join(repository, "pyproject.toml"),
     `[project]
@@ -111,26 +112,44 @@ version = "1.0.0"
 requires-python = "==3.12.8"
 dependencies = []
 
-[project.scripts]
-pytest = "fixture:pytest_main"
-ruff = "fixture:ruff_main"
+[tool.sandcastle-fixture]
+commands = ["pytest", "ruff"]
 `,
   );
   writeFileSync(
     join(repository, "fixture.py"),
-    `def pytest_main():
-    return 0
-
-def ruff_main():
-    return 0
+    `def value():
+    return 1
 `,
   );
+  const pytest = join(repository, "bin", "pytest");
+  writeFileSync(
+    pytest,
+    `#!/bin/sh
+set -eu
+test "$#" -eq 0
+python3 -c 'from fixture import value; assert value() == 1'
+`,
+  );
+  chmodSync(pytest, 0o755);
+  const ruff = join(repository, "bin", "ruff");
+  writeFileSync(
+    ruff,
+    `#!/bin/sh
+set -eu
+test "$#" -eq 2
+test "$1" = "check"
+test "$2" = "."
+python3 -c 'import ast; from pathlib import Path; ast.parse(Path("fixture.py").read_text())'
+`,
+  );
+  chmodSync(ruff, 0o755);
 }
 
 function writeGo(repository) {
   writeFileSync(
     join(repository, "go.mod"),
-    "module example.com/fixture\n\ngo 1.23.4\n\ntoolchain go1.23.4\n",
+    "module example.com/fixture\n\ngo 1.23.4\n",
   );
   writeFileSync(
     join(repository, "fixture.go"),
