@@ -559,6 +559,16 @@ async function executeProposal(
   }
 }
 
+function dockerHostUserArguments() {
+  if (
+    typeof process.getuid !== "function" ||
+    typeof process.getgid !== "function"
+  ) {
+    return [];
+  }
+  return ["--user", `${process.getuid()}:${process.getgid()}`];
+}
+
 async function runDockerFixture(_command, context) {
   const tag = `sandcastle-fixture:${context.fixture}-${process.pid}-${Date.now()}`;
   const build = runObservedProcess(
@@ -581,6 +591,7 @@ async function runDockerFixture(_command, context) {
       "docker",
       "run",
       "--rm",
+      ...dockerHostUserArguments(),
       "--mount",
       `type=bind,src=${context.repository},dst=/workspace,readonly`,
       "--workdir",

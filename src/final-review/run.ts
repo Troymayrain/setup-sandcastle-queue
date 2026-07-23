@@ -309,6 +309,18 @@ function command(
   });
 }
 
+function deterministicGitIdentityEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+    GIT_AUTHOR_EMAIL: "sandcastle@example.invalid",
+    GIT_AUTHOR_NAME: "Sandcastle Final Review",
+    GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+    GIT_COMMITTER_EMAIL: "sandcastle@example.invalid",
+    GIT_COMMITTER_NAME: "Sandcastle Final Review",
+  };
+}
+
 function commitMergeTree(
   workspacePath: string,
   tree: string,
@@ -321,15 +333,7 @@ function commitMergeTree(
       ["commit-tree", tree, "-p", targetBase, "-p", batchHead],
       {
         cwd: workspacePath,
-        env: createHostGitEnvironment({
-          ...process.env,
-          GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
-          GIT_AUTHOR_EMAIL: "sandcastle@example.invalid",
-          GIT_AUTHOR_NAME: "Sandcastle Final Review",
-          GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
-          GIT_COMMITTER_EMAIL: "sandcastle@example.invalid",
-          GIT_COMMITTER_NAME: "Sandcastle Final Review",
-        }),
+        env: createHostGitEnvironment(deterministicGitIdentityEnvironment()),
         stdio: ["pipe", "pipe", "ignore"],
       },
     );
@@ -380,7 +384,10 @@ async function createMergeWorkspace(
       "git",
       ["merge", "--quiet", "--no-commit", "--no-ff", batchHead],
       workspacePath,
-      { allowFailure: true },
+      {
+        allowFailure: true,
+        environment: deterministicGitIdentityEnvironment(),
+      },
     );
     if (merge.exitCode !== 0) {
       throw infrastructureError(

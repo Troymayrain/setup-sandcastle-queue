@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 function reviewState(
@@ -118,6 +118,28 @@ function finalReviewFixture() {
   };
 }
 
+function createIdentityCheckingGitPath() {
+  const directory = mkdtempSync(join(tmpdir(), "sandcastle-git-wrapper-"));
+  const executable = join(directory, "git");
+  const realGit = execFileSync("sh", ["-c", "command -v git"], {
+    encoding: "utf8",
+  }).trim();
+  writeFileSync(
+    executable,
+    `#!/bin/sh
+if [ "\${1:-}" = "merge" ]; then
+  test -n "\${GIT_AUTHOR_NAME:-}" || exit 91
+  test -n "\${GIT_AUTHOR_EMAIL:-}" || exit 91
+  test -n "\${GIT_COMMITTER_NAME:-}" || exit 91
+  test -n "\${GIT_COMMITTER_EMAIL:-}" || exit 91
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`,
+  );
+  chmodSync(executable, 0o755);
+  return `${directory}${delimiter}${process.env.PATH ?? ""}`;
+}
+
 function validAxisResult(input, findings = []) {
   return {
     axis: input.axis,
@@ -216,6 +238,28 @@ test("cumulative final review verifies a temporary merge on independent Standard
   assert.equal(ready.length, 1);
   assert.equal(ready[0].pullRequest, 44);
   assert.equal(ready[0].reviewedHead, result.reviewedHead);
+});
+
+test("cumulative final review supplies deterministic identity to Git merge", async () => {
+  const { runFinalReview } = await import("../dist/index.js");
+  const { options, repository, state } = finalReviewFixture();
+  const previousPath = process.env.PATH;
+  process.env.PATH = createIdentityCheckingGitPath();
+  try {
+    const result = await runFinalReview(repository, options, {
+      async markPullRequestReady() {},
+      async readState() {
+        return state;
+      },
+      async reviewAxis(input) {
+        return validAxisResult(input);
+      },
+    });
+    assert.equal(result.status, "passed");
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
 });
 
 test("an actionable finding blocks final review without marking the PR ready", async () => {

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import { runCredentiallessFixtureLifecycle } from "../scripts/credentialless-fixture-lib.mjs";
@@ -52,6 +54,63 @@ test("credentialless Node fixture records only observed lifecycle steps", async 
     startingState: "fresh",
   });
   assert.equal(evidence.usedCredentials, false);
+});
+
+test("credentialless fixture container runs as the host repository owner", async () => {
+  if (
+    typeof process.getuid !== "function" ||
+    typeof process.getgid !== "function"
+  ) {
+    return;
+  }
+  const directory = mkdtempSync(join(tmpdir(), "sandcastle-fixture-user-"));
+  const output = join(directory, "evidence.json");
+  const dockerLog = join(directory, "docker.log");
+  const bin = join(directory, "bin");
+  const docker = join(bin, "docker");
+  mkdirSync(bin);
+  writeFileSync(dockerLog, "");
+  writeFileSync(
+    docker,
+    `#!/bin/sh
+printf '%s\n' "$*" >> "$SANDCASTLE_DOCKER_LOG"
+`,
+  );
+  chmodSync(docker, 0o755);
+  const environment = {
+    ...process.env,
+    PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    SANDCASTLE_DOCKER_LOG: dockerLog,
+  };
+  for (const name of [
+    "ANTHROPIC_AUTH_TOKEN",
+    "LIVE_E2E_DISPATCH_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "NPM_TOKEN",
+    "SANDCASTLE_RELEASE_TOKEN",
+  ]) {
+    delete environment[name];
+  }
+
+  await runCredentiallessFixtureLifecycle({
+    candidateSha,
+    environment,
+    fixture: "node-npm",
+    observationRunner: actualNodeCommand(0),
+    output,
+    runtimeRunner: actualNodeCommand(0),
+  });
+
+  const dockerRun = readFileSync(dockerLog, "utf8")
+    .split("\n")
+    .find((line) => line.startsWith("run "));
+  assert.match(
+    dockerRun,
+    new RegExp(
+      `(?:^| )--user ${process.getuid()}:${process.getgid()}(?: |$)`,
+      "u",
+    ),
+  );
 });
 
 test("credentialless lifecycle fixtures exercise existing, adoption, and upgrade states", async () => {
