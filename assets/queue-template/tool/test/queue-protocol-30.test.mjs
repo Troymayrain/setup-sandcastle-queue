@@ -1,21 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { orchestrateProcessingRun } from "../dist/continuation.js";
-import { orchestrateFirstFinalReview } from "../dist/final-review.js";
 import { renderFinalReviewMarker } from "../dist/final-review-facts.js";
-import { nextFinalOperation } from "../dist/finalization.js";
-import { activateAndSelectFrontier } from "../dist/frontier.js";
-import { executeProcessingRun } from "../dist/processing-run.js";
 import {
   completionMessage,
   renderPublicationMarker,
 } from "../dist/publication-facts.js";
-import { reconcilePublication } from "../dist/reconciliation.js";
+import { executeWorkflowHostOperation } from "../dist/workflow-host.js";
 
 const baseHead = "b".repeat(40);
 const integrationBranch = "sandcastle/integration";
@@ -83,7 +78,14 @@ class StatefulQueueFake {
     this.repository = mkdtempSync(join(tmpdir(), "queue-protocol-repository-"));
     this.sessionInputs = [];
     this.sessionIds = [];
+    this.finalFixPrompt = join(this.repository, "final-fix.md");
+    this.finalReviewPrompt = join(this.repository, "final-review.md");
     this.ticketPrompt = join(this.repository, "ticket.md");
+    writeFileSync(this.finalFixPrompt, "# Final Fix\n\nFix the reviewed result.\n");
+    writeFileSync(
+      this.finalReviewPrompt,
+      "# Final Review\n\nReturn pass or needs-fix.\n",
+    );
     writeFileSync(this.ticketPrompt, "# Ticket\n\nImplement the selected Ticket.\n");
 
     for (let number = 201; number <= 230; number += 1) {
@@ -314,7 +316,12 @@ class StatefulQueueFake {
   }
 
   ticketWorkUnit = async (input) => {
-    const issue = this.currentTicket;
+    const selected = readFileSync(input.promptFile, "utf8").match(
+      /## Selected GitHub Ticket #([1-9][0-9]*)/u,
+    );
+    assert.ok(selected, "workflow-host must bind the selected Ticket prompt");
+    const issue = Number(selected[1]);
+    this.currentTicket = issue;
     const agentCommit = objectId("agent", issue);
     const beforeHead = this.integrationHead ?? this.baseHead;
     this.events.push(["sandcastle", "ticket", this.currentRunId, issue]);
@@ -349,63 +356,68 @@ class StatefulQueueFake {
       verdict: "pass",
     };
   };
+
+  runWorkUnit = (input) =>
+    input.role === "ticket"
+      ? this.ticketWorkUnit(input)
+      : this.finalReviewWorkUnit(input);
 }
 
-function processingOptions(state) {
+function workflowConfig() {
   return {
-    baseBranch: "main",
     commands: {
       bootstrap: [{ argv: ["fixture", "bootstrap"] }],
       test: [{ argv: ["fixture", "test"] }],
       verification: [{ argv: ["fixture", "verification"] }],
     },
-    environment: {
-      GITHUB_RUN_ID: state.currentRunId,
-      GITHUB_TOKEN: "host-only-token",
+    execution: {
+      hostFinalizationReserveMinutes: 15,
     },
-    integrationBranch,
-    model: "fake-ticket-model",
-    promptFile: state.ticketPrompt,
-    repository: state.repository,
+    models: {
+      finalFix: "fake-final-fix-model",
+      finalReview: "fake-final-review-model",
+      ticket: "fake-ticket-model",
+    },
+    queue: {
+      ownershipLabel: labels.ownership,
+      readyLabel: labels.ready,
+    },
+    repository: {
+      baseBranch: "main",
+      integrationBranch,
+    },
   };
 }
 
-function processingDependencies(state) {
-  return {
-    finalize: () =>
-      nextFinalOperation(
-        {
-          baseBranch: "main",
-          integrationBranch,
-        },
-        state,
-      ),
-    process: async (selected) => {
-      state.currentTicket = selected.number;
-      try {
-        return await executeProcessingRun(
-          {
-            ...processingOptions(state),
-            ticket: selected,
-          },
-          state,
-          state.ticketWorkUnit,
-        );
-      } finally {
-        state.currentTicket = null;
-      }
+function executeInvocation(state, invocation) {
+  state.currentRunId = invocation.runId;
+  return executeWorkflowHostOperation(
+    {
+      config: workflowConfig(),
+      environment: {
+        GITHUB_RUN_ID: invocation.runId,
+        GITHUB_TOKEN: "host-only-token",
+        SANDCASTLE_JOB_HARD_DEADLINE_MS: String(
+          Date.now() + 60 * 60_000,
+        ),
+      },
+      expectedHead: invocation.expectedHead,
+      operation: invocation.operation,
+      predecessorRunId: invocation.predecessorRunId,
+      promptFiles: {
+        finalFix: state.finalFixPrompt,
+        finalReview: state.finalReviewPrompt,
+        ticket: state.ticketPrompt,
+      },
+      repository: state.repository,
     },
-    reconcile: () =>
-      reconcilePublication(
-        {
-          baseBranch: "main",
-          integrationBranch,
-        },
-        state,
-      ),
-    select: (activate) =>
-      activateAndSelectFrontier(state, labels, activate),
-  };
+    {
+      finalReviewHost: state,
+      github: state,
+      integrationHost: state,
+      runWorkUnit: state.runWorkUnit,
+    },
+  );
 }
 
 function nextInvocation(state, runId) {
@@ -434,25 +446,24 @@ test("30 Tickets converge through unique publications, Continuations, reconcilia
     operation: "start",
     runId: String(runId),
   };
-  let finalInvocation;
+  let finalResult = null;
 
-  for (;;) {
-    state.currentRunId = invocation.runId;
+  for (let invocationCount = 0; invocationCount < 33; invocationCount += 1) {
     try {
-      const result = await orchestrateProcessingRun(
-        invocation,
-        state,
-        processingDependencies(state),
-      );
-      if (result.status === "final-review-dispatched") {
-        finalInvocation = nextInvocation(state, ++runId);
+      const result = await executeInvocation(state, invocation);
+      if (result.status === "ready-for-human-review") {
+        finalResult = result;
         break;
       }
-      assert.equal(result.status, "continued");
+      assert.ok(
+        result.status === "continued" ||
+          result.status === "final-review-dispatched",
+        `unexpected workflow-host result: ${JSON.stringify(result)}`,
+      );
       invocation = nextInvocation(state, ++runId);
     } catch (error) {
       assert.match(error.message, /injected crash after push verification/u);
-      assert.equal(state.currentTicket, null);
+      assert.equal(state.currentTicket, state.crashTicket);
       invocation = {
         baseBranch: "main",
         expectedHead: state.integrationHead,
@@ -464,30 +475,10 @@ test("30 Tickets converge through unique publications, Continuations, reconcilia
     }
   }
 
-  state.currentRunId = finalInvocation.runId;
-  const finalResult = await orchestrateFirstFinalReview(
-    {
-      baseBranch: "main",
-      commands: {
-        bootstrap: [{ argv: ["fixture", "bootstrap"] }],
-        test: [{ argv: ["fixture", "test"] }],
-        verification: [{ argv: ["fixture", "verification"] }],
-      },
-      environment: {
-        GITHUB_RUN_ID: finalInvocation.runId,
-        GITHUB_TOKEN: "host-only-token",
-      },
-      expectedHead: finalInvocation.expectedHead,
-      integrationBranch,
-      model: "fake-final-review-model",
-      predecessorRunId: finalInvocation.predecessorRunId,
-      promptFile: "/fixture/final-review.md",
-    },
-    state,
-    () => activateAndSelectFrontier(state, labels, false),
-    state.finalReviewWorkUnit,
+  assert.ok(
+    finalResult,
+    "Queue Protocol exceeded 33 workflow-host invocations without converging",
   );
-
   assert.equal(finalResult.status, "ready-for-human-review");
   assert.equal(finalResult.verdict, "pass");
 
@@ -628,7 +619,13 @@ test("contradictory owned Ticket facts fail closed without Queue writes", async 
   ]);
   state.cloneIssue = (value) => structuredClone(value);
 
-  const result = await activateAndSelectFrontier(state, labels, false);
+  state.integrationHead = baseHead;
+  const result = await executeInvocation(state, {
+    expectedHead: baseHead,
+    operation: "continue",
+    predecessorRunId: "8999",
+    runId: "9000",
+  });
 
   assert.equal(result.status, "conflict");
   assert.equal(result.reason, "contradictory-issue-99");
