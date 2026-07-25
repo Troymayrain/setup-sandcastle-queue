@@ -385,3 +385,36 @@ test("init rejects symlink parents and asset path traversal", () => {
     code: "INSTALL_PATH_OUTSIDE_REPOSITORY",
   });
 });
+
+test("init works when the Git directory is stored separately", () => {
+  const parent = mkdtempSync(join(tmpdir(), "sandcastle-separate-git-"));
+  const repository = join(parent, "worktree");
+  const gitDirectory = join(parent, "metadata.git");
+  mkdirSync(repository);
+  execFileSync("git", [
+    "init",
+    "--quiet",
+    `--separate-git-dir=${gitDirectory}`,
+    repository,
+  ]);
+  writeFileSync(join(repository, "README.md"), "# fixture\n");
+  execFileSync("git", ["-C", repository, "add", "README.md"]);
+  execFileSync("git", [
+    "-C",
+    repository,
+    "-c",
+    "user.name=Sandcastle Test",
+    "-c",
+    "user.email=sandcastle@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture",
+  ]);
+  const config = writeConfig(repository);
+
+  const result = run(repository, ["init", "--config", config], "yes\n");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(repository, ".sandcastle", "config.json")), true);
+});

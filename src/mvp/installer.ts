@@ -1,12 +1,9 @@
 import { execFile } from "node:child_process";
 import {
-  link,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   realpath,
-  rm,
   rmdir,
   unlink,
   writeFile,
@@ -141,18 +138,6 @@ async function inspect(root: string, assets: TemplateAsset[]): Promise<Inventory
   return inventory;
 }
 
-async function writeTree(root: string, assets: TemplateAsset[]): Promise<void> {
-  for (const asset of assets) {
-    const target = join(root, asset.path);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, asset.content, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o644,
-    });
-  }
-}
-
 function renderPatch(assets: TemplateAsset[]): string {
   return assets
     .map((asset) => {
@@ -278,13 +263,6 @@ async function ensureParents(
   return target;
 }
 
-async function transactionRoot(root: string): Promise<string> {
-  const source = (await git(root, ["rev-parse", "--git-dir"])).trim();
-  const gitDirectory = isAbsolute(source) ? source : resolve(root, source);
-  await mkdir(join(gitDirectory, "sandcastle"), { recursive: true, mode: 0o700 });
-  return mkdtemp(join(gitDirectory, "sandcastle", "install-"));
-}
-
 async function assertResolvedParentInside(root: string, target: string): Promise<void> {
   const [resolvedRoot, resolvedParent] = await Promise.all([
     realpath(root),
@@ -315,20 +293,19 @@ export async function applyInit(root: string, preview: InitPreview): Promise<voi
     );
   }
 
-  const transaction = await transactionRoot(root);
-  const staged = join(transaction, "candidate");
   const installed: string[] = [];
   const createdDirectories: string[] = [];
   try {
-    await writeTree(staged, preview.assets);
     for (const asset of preview.assets) {
       const target = await ensureParents(root, asset.path, createdDirectories);
-      const source = join(staged, asset.path);
       await assertResolvedParentInside(root, target);
-      await link(source, target);
+      await writeFile(target, asset.content, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o644,
+      });
       installed.push(target);
       await assertResolvedParentInside(root, target);
-      await unlink(source);
     }
   } catch (error) {
     const rollbackFailures: string[] = [];
@@ -354,7 +331,5 @@ export async function applyInit(root: string, preview: InitPreview): Promise<voi
       "INSTALLATION_WRITE_FAILED",
       "Unable to atomically write Queue Template assets; all writes were rolled back.",
     );
-  } finally {
-    await rm(transaction, { force: true, recursive: true });
   }
 }
