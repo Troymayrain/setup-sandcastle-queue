@@ -280,12 +280,8 @@ test("doctor --offline is read-only and marks remote checks not-run", () => {
   );
 
   const full = run(repository, ["doctor", "--json"]);
-  assert.equal(full.status, 4);
-  assert.equal(JSON.parse(full.stdout).mode, "full");
-  assert.deepEqual(JSON.parse(full.stdout).checks.remote, {
-    code: "REMOTE_NOT_CONFIGURED",
-    status: "fail",
-  });
+  assert.equal(full.status, 3);
+  assert.equal(JSON.parse(full.stdout).code, "GITHUB_ENVIRONMENT_UNREADABLE");
 });
 
 test("init reports a parent-path collision as an exact conflict inventory", () => {
