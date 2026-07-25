@@ -9,6 +9,7 @@ import {
   renderPublicationMarker,
   type PublicationMarker,
 } from "./publication-facts.js";
+import type { DeadlinePublicationFact } from "./deadline.js";
 
 export { renderPublicationMarker } from "./publication-facts.js";
 
@@ -54,6 +55,13 @@ export interface ReconciliationOptions {
   integrationBranch: string;
 }
 
+export interface PublicationInspectionBoundary {
+  getCommit(sha: string): Promise<RemoteCommit>;
+  getIssue(issue: number): Promise<RemoteIssue>;
+  listIssueComments(issue: number): Promise<IssueComment[]>;
+  remoteHead(branch: string): Promise<string | null>;
+}
+
 export type ReconciliationResult =
   | { status: "none" }
   | { head: string; status: "complete"; ticket: number }
@@ -88,6 +96,56 @@ function markersFrom(comments: IssueComment[]): PublicationMarker[] | null {
   } catch {
     return null;
   }
+}
+
+export async function inspectPublicationAtDeadline(
+  options: {
+    beforeHead: string;
+    integrationBranch: string;
+    ticket: number;
+  },
+  boundary: PublicationInspectionBoundary,
+): Promise<DeadlinePublicationFact> {
+  const integrationHead = await boundary.remoteHead(options.integrationBranch);
+  if (integrationHead === options.beforeHead) return { status: "absent" };
+  if (!integrationHead) return { status: "unknown" };
+
+  const commit = await boundary.getCommit(integrationHead);
+  const metadata = parseCompletionMetadata(commit.message);
+  if (
+    commit.sha !== integrationHead ||
+    commit.parents.length !== 1 ||
+    commit.parents[0] !== options.beforeHead ||
+    metadata?.beforeHead !== options.beforeHead ||
+    metadata.issue !== options.ticket
+  ) {
+    return { status: "unknown" };
+  }
+
+  const [issue, comments] = await Promise.all([
+    boundary.getIssue(options.ticket),
+    boundary.listIssueComments(options.ticket),
+  ]);
+  const markers = markersFrom(comments);
+  const expected: PublicationMarker = {
+    afterHead: integrationHead,
+    beforeHead: metadata.beforeHead,
+    integrationBranch: options.integrationBranch,
+    issue: metadata.issue,
+    runId: metadata.runId,
+    schemaVersion: 1,
+    sessionId: metadata.sessionId,
+    type: "sandcastle-ticket-publication",
+  };
+  if (
+    issue.number !== options.ticket ||
+    issue.state !== "closed" ||
+    markers?.length !== 1 ||
+    !equalMarker(markers[0]!, expected)
+  ) {
+    return { status: "unknown" };
+  }
+  return { head: integrationHead, status: "complete", ticket: options.ticket };
 }
 
 export async function reconcilePublication(

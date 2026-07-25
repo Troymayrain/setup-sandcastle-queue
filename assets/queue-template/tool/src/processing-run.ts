@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
+import type { DeadlineLifecycle } from "./deadline.js";
 import {
   ensureIntegrationPullRequest,
   type DraftPullRequest,
@@ -47,7 +48,11 @@ export interface TicketHostBoundary {
   localHead(): Promise<string>;
   pushIntegration(branch: string, before: string, after: string): Promise<void>;
   remoteHead(branch: string): Promise<string | null>;
-  runCommand(argv: string[], environment: NodeJS.ProcessEnv): Promise<void>;
+  runCommand(
+    argv: string[],
+    environment: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 export interface ProcessingRunOptions {
@@ -59,6 +64,7 @@ export interface ProcessingRunOptions {
   };
   environment: NodeJS.ProcessEnv;
   integrationBranch: string;
+  lifecycle?: DeadlineLifecycle;
   model: string;
   promptFile: string;
   repository: string;
@@ -90,9 +96,10 @@ async function runCommands(
   commands: CommandSpec[],
   boundary: TicketHostBoundary,
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<void> {
   for (const { argv } of commands) {
-    await boundary.runCommand([...argv], environment);
+    await boundary.runCommand([...argv], environment, signal);
   }
 }
 
@@ -160,10 +167,16 @@ export async function executeProcessingRun(
   runWorkUnit: WorkUnitExecutor = executeWorkUnit,
 ): Promise<ProcessingRunResult> {
   const beforeHead = await integrationHead(options, boundary);
+  options.lifecycle?.onBeforeHead(beforeHead);
   await boundary.checkoutIntegration(options.integrationBranch, beforeHead);
 
   const commandEnvironment = withoutExecutionCredentials(options.environment);
-  await runCommands(options.commands.bootstrap, boundary, commandEnvironment);
+  await runCommands(
+    options.commands.bootstrap,
+    boundary,
+    commandEnvironment,
+    options.lifecycle?.signal,
+  );
 
   const prompt = await ticketPrompt(options.promptFile, options.ticket);
   let workUnit: WorkUnitResult;
@@ -174,13 +187,24 @@ export async function executeProcessingRun(
       model: options.model,
       promptFile: prompt.path,
       role: "ticket",
+      signal: options.lifecycle?.signal,
     });
   } finally {
     await prompt.remove();
   }
 
-  await runCommands(options.commands.test, boundary, commandEnvironment);
-  await runCommands(options.commands.verification, boundary, commandEnvironment);
+  await runCommands(
+    options.commands.test,
+    boundary,
+    commandEnvironment,
+    options.lifecycle?.signal,
+  );
+  await runCommands(
+    options.commands.verification,
+    boundary,
+    commandEnvironment,
+    options.lifecycle?.signal,
+  );
 
   const afterHead = await boundary.localHead();
   const [parents, clean] = await Promise.all([
@@ -188,6 +212,10 @@ export async function executeProcessingRun(
     boundary.isClean(),
   ]);
   validateAgentCompletion(beforeHead, afterHead, parents, workUnit, clean);
+  if (options.lifecycle?.signal.aborted) {
+    throw new Error("Ticket deadline reached before Host finalization.");
+  }
+  options.lifecycle?.onExecutionComplete();
 
   const runId = options.environment.GITHUB_RUN_ID;
   if (!runId) {

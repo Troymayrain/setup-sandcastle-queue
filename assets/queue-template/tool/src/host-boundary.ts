@@ -195,6 +195,7 @@ export class NodeTicketHost implements TicketHostBoundary {
   async runCommand(
     argv: string[],
     environment: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
   ): Promise<void> {
     const [command, ...arguments_] = argv;
     if (!command) throw new Error("Project command argv cannot be empty.");
@@ -204,6 +205,7 @@ export class NodeTicketHost implements TicketHostBoundary {
         encoding: "utf8",
         env: environment,
         maxBuffer: 16 * 1024 * 1024,
+        signal,
       });
     } catch {
       throw new Error("A configured project command failed.");
