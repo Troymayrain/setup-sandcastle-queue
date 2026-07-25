@@ -123,27 +123,34 @@ export class RestFrontierGitHub implements FrontierGitHub {
     head: string;
   }): Promise<IntegrationPullRequest[]> {
     const [owner] = this.#repository.split("/");
-    const query = new URLSearchParams({
-      base: input.base,
-      head: `${owner}:${input.head}`,
-      per_page: "100",
-      state: "all",
-    });
-    const result = await this.#request<
-      Array<{
-        draft?: boolean;
-        html_url?: string;
-        number?: number;
-        state?: string;
-      }>
-    >("GET", `/repos/${this.#repository}/pulls?${query}`);
+    const result: Array<{
+      draft?: boolean;
+      html_url?: string;
+      number?: number;
+      state?: string;
+    }> = [];
+    for (let page = 1; ; page += 1) {
+      const query = new URLSearchParams({
+        base: input.base,
+        head: `${owner}:${input.head}`,
+        page: String(page),
+        per_page: "100",
+        state: "open",
+      });
+      const current = await this.#request<typeof result>(
+        "GET",
+        `/repos/${this.#repository}/pulls?${query}`,
+      );
+      result.push(...current);
+      if (current.length < 100) break;
+    }
     return result.map((pullRequest) => {
       if (
         typeof pullRequest.draft !== "boolean" ||
         typeof pullRequest.html_url !== "string" ||
         !Number.isSafeInteger(pullRequest.number) ||
         (pullRequest.number ?? 0) <= 0 ||
-        (pullRequest.state !== "open" && pullRequest.state !== "closed")
+        pullRequest.state !== "open"
       ) {
         throw new Error("GitHub returned an invalid Integration pull request.");
       }

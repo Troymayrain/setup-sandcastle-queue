@@ -84,7 +84,7 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
     /^<!-- sandcastle-ticket-publication\n\{.+\}\n-->$/u,
   );
   assert.deepEqual(requests[3].body, { state: "closed" });
-  assert.match(requests[4].path, /state=all/u);
+  assert.match(requests[4].path, /state=open/u);
   assert.deepEqual(requests[5].body, {
     base: "main",
     body: "This draft accumulates fully published Sandcastle Queue Tickets.",
