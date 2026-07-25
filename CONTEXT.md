@@ -43,3 +43,11 @@ _Avoid_: mutable checkpoint, Batch state
 **Ticket Publication Reconciliation**:
 Processing Run 选择新 Ticket 前，从远端 completion commit、Ticket、Ticket Publication Marker 与 Issue 状态唯一证明并补齐中断的 publication；无法唯一证明时停止为 `conflict`。
 _Avoid_: rerun Agent, rewrite history, local checkpoint
+
+**Final Review**:
+Queue 真正清空后，在临时合并最新 base 的独立 worktree 中运行项目检查和 fresh read-only Sandcastle session；只产生 `pass` 或 `needs-fix` verdict，不修改 Integration Branch。
+_Avoid_: Ticket review, Agent self-approval, automatic merge
+
+**Final Review Marker**:
+写入唯一 Integration PR 的不可变远端事实，绑定完整 Integration HEAD、base HEAD、verdict 与 run ID；只有可见且唯一的 `pass` marker 才允许把 draft PR 标记为 ready for human review。
+_Avoid_: mutable review state, approval, merge authorization

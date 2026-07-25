@@ -3,8 +3,14 @@ import type {
   DraftPullRequest,
   IntegrationPullRequest,
 } from "./integration-pull-request.js";
-import { renderPublicationMarker } from "./publication-facts.js";
-import type { PublicationMarker } from "./publication-facts.js";
+import {
+  renderFinalReviewMarker,
+  renderPublicationMarker,
+} from "./publication-facts.js";
+import type {
+  FinalReviewMarker,
+  PublicationMarker,
+} from "./publication-facts.js";
 
 type RetryMode = "none" | "retryable";
 
@@ -248,6 +254,7 @@ export class RestGitHubHost implements FrontierGitHub {
     const result: Array<{
       draft?: boolean;
       html_url?: string;
+      node_id?: string;
       number?: number;
       state?: string;
     }> = [];
@@ -270,6 +277,8 @@ export class RestGitHubHost implements FrontierGitHub {
       if (
         typeof pullRequest.draft !== "boolean" ||
         typeof pullRequest.html_url !== "string" ||
+        typeof pullRequest.node_id !== "string" ||
+        pullRequest.node_id.length === 0 ||
         !Number.isSafeInteger(pullRequest.number) ||
         (pullRequest.number ?? 0) <= 0 ||
         pullRequest.state !== "open"
@@ -278,6 +287,7 @@ export class RestGitHubHost implements FrontierGitHub {
       }
       return {
         draft: pullRequest.draft,
+        nodeId: pullRequest.node_id,
         number: pullRequest.number!,
         state: pullRequest.state,
         url: pullRequest.html_url,
@@ -293,6 +303,7 @@ export class RestGitHubHost implements FrontierGitHub {
     const result = await this.#request<{
       draft?: boolean;
       html_url?: string;
+      node_id?: string;
       number?: number;
     }>("POST", `/repos/${this.#repository}/pulls`, {
       base: input.base,
@@ -304,6 +315,8 @@ export class RestGitHubHost implements FrontierGitHub {
     if (
       result.draft !== true ||
       typeof result.html_url !== "string" ||
+      typeof result.node_id !== "string" ||
+      result.node_id.length === 0 ||
       !Number.isSafeInteger(result.number) ||
       (result.number ?? 0) <= 0
     ) {
@@ -311,6 +324,7 @@ export class RestGitHubHost implements FrontierGitHub {
     }
     return {
       draft: true,
+      nodeId: result.node_id,
       number: result.number!,
       url: result.html_url,
     };
@@ -324,6 +338,28 @@ export class RestGitHubHost implements FrontierGitHub {
     };
     ref: string;
   }): Promise<void> {
+    await this.#dispatchQueueWorkflow(payload);
+  }
+
+  async dispatchFinalReview(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-review";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    await this.#dispatchQueueWorkflow(payload);
+  }
+
+  async #dispatchQueueWorkflow(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "continue" | "final-review";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
     await this.#request(
       "POST",
       `/repos/${this.#repository}/actions/workflows/sandcastle-queue.yml/dispatches`,
@@ -331,5 +367,44 @@ export class RestGitHubHost implements FrontierGitHub {
       false,
       "retryable",
     );
+  }
+
+  async createFinalReviewMarker(
+    pullRequest: number,
+    marker: FinalReviewMarker,
+  ): Promise<{ id: number }> {
+    const result = await this.#request<{ id?: number }>(
+      "POST",
+      `/repos/${this.#repository}/issues/${pullRequest}/comments`,
+      { body: renderFinalReviewMarker(marker) },
+    );
+    if (!Number.isSafeInteger(result.id) || (result.id ?? 0) <= 0) {
+      throw new Error("GitHub omitted the immutable Final Review Marker identity.");
+    }
+    return { id: result.id! };
+  }
+
+  async markPullRequestReady(nodeId: string): Promise<void> {
+    const result = await this.#request<{
+      data?: {
+        markPullRequestReadyForReview?: {
+          pullRequest?: { id?: string; isDraft?: boolean };
+        };
+      };
+      errors?: unknown[];
+    }>("POST", "/graphql", {
+      query:
+        "mutation MarkReady($pullRequestId: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { id isDraft } } }",
+      variables: { pullRequestId: nodeId },
+    });
+    const pullRequest =
+      result.data?.markPullRequestReadyForReview?.pullRequest;
+    if (
+      (Array.isArray(result.errors) && result.errors.length > 0) ||
+      pullRequest?.id !== nodeId ||
+      pullRequest.isDraft !== false
+    ) {
+      throw new Error("GitHub did not confirm the Integration pull request is ready.");
+    }
   }
 }

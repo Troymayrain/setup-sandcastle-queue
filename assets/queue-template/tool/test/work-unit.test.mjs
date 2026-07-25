@@ -29,11 +29,12 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
       rawPaths.push(options.logging.path);
       assert.equal(statSync(options.logging.path).mode & 0o777, 0o600);
       writeFileSync(options.logging.path, "temporary raw stream\n");
+      const review = options.name.includes("review");
       return {
         branch: "sandcastle/integration",
-        commits: [{ sha: `${nextSession}`.padStart(40, "a") }],
+        commits: review ? [] : [{ sha: `${nextSession}`.padStart(40, "a") }],
         iterations: [{ sessionId: `session-${nextSession++}` }],
-        stdout: "complete",
+        stdout: review ? "pass" : "complete",
       };
     },
   };
@@ -68,6 +69,8 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     assert.equal(options.sandbox.options.containerUid, 1000);
     assert.equal(options.sandbox.options.containerGid, 1000);
   }
+  assert.equal(observed[1].agent.options.permissionMode, "plan");
+  assert.equal(observed[3].agent.options.permissionMode, "plan");
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
   assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {
     jsonLines: 1,
@@ -108,4 +111,40 @@ test("raw stream is deleted when Sandcastle fails", async () => {
     /agent failed/u,
   );
   assert.equal(existsSync(rawPath), false);
+});
+
+test("read-only review rejects any output other than the exact verdict", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "queue-tool-invalid-review-"));
+  const promptFile = join(cwd, "prompt.md");
+  writeFileSync(promptFile, "review\n");
+  const boundary = {
+    claudeCode: () => ({}),
+    docker: () => ({}),
+    async run(options) {
+      writeFileSync(options.logging.path, "temporary raw stream\n");
+      return {
+        branch: "temporary",
+        commits: [],
+        iterations: [{ sessionId: "review-session" }],
+        stdout: "PASS with explanation",
+      };
+    },
+  };
+
+  await assert.rejects(
+    executeWorkUnit(
+      {
+        cwd,
+        environment: {
+          ANTHROPIC_AUTH_TOKEN: "secret",
+          ANTHROPIC_BASE_URL: "https://provider.example",
+        },
+        model: "review-model",
+        promptFile,
+        role: "final-review",
+      },
+      boundary,
+    ),
+    /verdict must be exactly/u,
+  );
 });

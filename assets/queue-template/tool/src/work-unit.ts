@@ -26,7 +26,11 @@ interface RunResultLike {
 export interface SandcastleBoundary {
   claudeCode: (
     model: string,
-    options: { captureSessions: true; env: Record<string, string> },
+    options: {
+      captureSessions: true;
+      env: Record<string, string>;
+      permissionMode?: "plan";
+    },
   ) => unknown;
   docker: (options: {
     containerGid: number;
@@ -53,6 +57,7 @@ export interface WorkUnitResult {
   sessionId: string;
   status: "complete";
   streamSummary: RawStreamSummary;
+  verdict?: "needs-fix" | "pass";
 }
 
 export interface RawStreamSummary {
@@ -121,12 +126,15 @@ export async function executeWorkUnit(
   await handle.close();
 
   try {
+    const reviewRole =
+      options.role === "final-review" || options.role === "final-rereview";
     let result: RunResultLike;
     try {
       result = await boundary.run({
       agent: boundary.claudeCode(options.model, {
         captureSessions: true,
         env: providerEnvironment(options.environment),
+        ...(reviewRole ? { permissionMode: "plan" as const } : {}),
       }),
       branchStrategy: { type: "merge-to-head" },
       cwd: resolve(options.cwd),
@@ -150,6 +158,18 @@ export async function executeWorkUnit(
     const streamSummary = parseRawAgentStream(
       await readFile(rawStreamPath, "utf8"),
     );
+    const candidateVerdict = reviewRole ? result.stdout.trim() : undefined;
+    if (
+      reviewRole &&
+      candidateVerdict !== "pass" &&
+      candidateVerdict !== "needs-fix"
+    ) {
+      throw new Error("Final Review verdict must be exactly pass or needs-fix.");
+    }
+    const verdict =
+      candidateVerdict === "pass" || candidateVerdict === "needs-fix"
+        ? candidateVerdict
+        : undefined;
     return {
       branch: result.branch,
       commits: result.commits.map(({ sha }) => sha),
@@ -157,6 +177,7 @@ export async function executeWorkUnit(
       sessionId: sessionId(result),
       status: "complete",
       streamSummary,
+      ...(reviewRole ? { verdict } : {}),
     };
   } finally {
     await rm(temporary, { force: true, recursive: true });
