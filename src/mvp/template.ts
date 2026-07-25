@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { canonicalJson } from "../canonical-json.js";
@@ -13,6 +14,24 @@ const schema = readFileSync(
   fileURLToPath(new URL("../../schema/mvp-config.schema.json", import.meta.url)),
   "utf8",
 );
+const toolRoot = fileURLToPath(
+  new URL("../../assets/queue-template/tool", import.meta.url),
+);
+
+function toolAssets(root: string = toolRoot, current: string = root): TemplateAsset[] {
+  return readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === "node_modules" || entry.name === "dist") return [];
+    const absolute = join(current, entry.name);
+    if (entry.isDirectory()) return toolAssets(root, absolute);
+    if (!entry.isFile()) return [];
+    return [
+      {
+        content: readFileSync(absolute, "utf8"),
+        path: `.sandcastle/tool/${relative(root, absolute).split("\\").join("/")}`,
+      },
+    ];
+  });
+}
 
 function workflow(config: QueueConfig): string {
   return `name: Sandcastle Queue
@@ -69,6 +88,7 @@ jobs:
 
 export function renderQueueTemplate(config: QueueConfig): TemplateAsset[] {
   const assets: TemplateAsset[] = [
+    ...toolAssets(),
     {
       path: ".github/workflows/sandcastle-queue.yml",
       content: workflow(config),
@@ -102,69 +122,6 @@ export function renderQueueTemplate(config: QueueConfig): TemplateAsset[] {
       path: ".sandcastle/prompts/final-fix.md",
       content:
         "# Final fix\n\nFix the findings authorized for the reviewed Integration Branch HEAD.\n",
-    },
-    {
-      path: ".sandcastle/tool/package.json",
-      content: canonicalJson({
-        name: "sandcastle-queue-template-tool",
-        version: "1.0.0",
-        private: true,
-        type: "module",
-        engines: { node: ">=22 <23" },
-        scripts: {
-          start: "node dist/index.js",
-          build: "tsc -p tsconfig.json",
-          typecheck: "tsc -p tsconfig.json --noEmit",
-          test: "node --test test/*.test.mjs",
-        },
-        dependencies: { "@ai-hero/sandcastle": "0.12.0" },
-        devDependencies: { "@types/node": "22.20.1", typescript: "5.9.3" },
-      }),
-    },
-    {
-      path: ".sandcastle/tool/package-lock.json",
-      content: canonicalJson({
-        name: "sandcastle-queue-template-tool",
-        version: "1.0.0",
-        lockfileVersion: 3,
-        requires: true,
-        packages: {
-          "": {
-            name: "sandcastle-queue-template-tool",
-            version: "1.0.0",
-            dependencies: { "@ai-hero/sandcastle": "0.12.0" },
-            devDependencies: { "@types/node": "22.20.1", typescript: "5.9.3" },
-          },
-        },
-      }),
-    },
-    {
-      path: ".sandcastle/tool/tsconfig.json",
-      content: canonicalJson({
-        compilerOptions: {
-          target: "ES2022",
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          outDir: "dist",
-          rootDir: "src",
-          strict: true,
-        },
-        include: ["src/**/*.ts"],
-      }),
-    },
-    {
-      path: ".sandcastle/tool/Dockerfile",
-      content: "FROM node:22-bookworm-slim\nWORKDIR /queue\nCOPY package*.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n",
-    },
-    {
-      path: ".sandcastle/tool/src/index.ts",
-      content:
-        'process.stdout.write(`${JSON.stringify({ status: "not-implemented", operation: process.argv[2] ?? null })}\\n`);\n',
-    },
-    {
-      path: ".sandcastle/tool/test/template.test.mjs",
-      content:
-        'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("template tool loads", () => assert.equal(true, true));\n',
     },
   ];
   return assets.sort((left, right) => left.path.localeCompare(right.path));
