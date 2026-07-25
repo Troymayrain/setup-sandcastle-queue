@@ -366,14 +366,17 @@ for (const [kind, definition] of Object.entries(fixtureDefinitions)) {
     const readmePath = join(repository, ".sandcastle", "README.md");
     const templateReadme = readFileSync(readmePath, "utf8");
     writeFileSync(readmePath, "occupied by the project\n");
+    const beforeConflict = snapshot(repository);
     const conflict = runCli(repository, configPath);
     assert.equal(conflict.status, 4, conflict.stderr);
     const conflictOutput = JSON.parse(conflict.stdout);
     assert.equal(conflictOutput.code, "INSTALLATION_CONFLICT");
     assert.deepEqual(conflictOutput.inventory.conflicting, [".sandcastle/README.md"]);
+    assert.deepEqual(snapshot(repository), beforeConflict);
 
     writeFileSync(readmePath, templateReadme);
     rmSync(join(repository, ".sandcastle", "config.schema.json"));
+    const beforePartial = snapshot(repository);
     const partial = runCli(repository, configPath);
     assert.equal(partial.status, 4, partial.stderr);
     const partialOutput = JSON.parse(partial.stdout);
@@ -381,6 +384,7 @@ for (const [kind, definition] of Object.entries(fixtureDefinitions)) {
     assert.deepEqual(partialOutput.inventory.missing, [
       ".sandcastle/config.schema.json",
     ]);
+    assert.deepEqual(snapshot(repository), beforePartial);
 
     for (const [path, hash] of Object.entries(applicationBefore)) {
       assert.equal(sha256(readFileSync(join(repository, path))), hash, path);
