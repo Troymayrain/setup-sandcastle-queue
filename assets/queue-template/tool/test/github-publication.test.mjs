@@ -17,6 +17,7 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
     {
       draft: true,
       html_url: "https://example.invalid/pr/31",
+      node_id: "PR_node_31",
       number: 31,
     },
     undefined,
@@ -117,4 +118,58 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
     requests[6].path,
     /actions\/workflows\/sandcastle-queue\.yml\/dispatches$/u,
   );
+});
+
+test("Final Review marker creation and ready transition use distinct non-retried writes", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const responses = [
+    { id: 72 },
+    {
+      data: {
+        markPullRequestReadyForReview: {
+          pullRequest: { id: "PR_node_31", isDraft: false },
+        },
+      },
+    },
+  ];
+  globalThis.fetch = async (url, input) => {
+    requests.push({
+      body: JSON.parse(input.body),
+      path: new URL(url).pathname,
+    });
+    return new Response(JSON.stringify(responses.shift()), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    });
+  };
+
+  try {
+    const client = new RestGitHubHost({
+      GITHUB_REPOSITORY: "acme/widget",
+      GITHUB_TOKEN: "github-secret",
+    });
+    await client.createFinalReviewMarker(31, {
+      baseHead: "b".repeat(40),
+      integrationHead: head,
+      runId: "9002",
+      schemaVersion: 1,
+      type: "sandcastle-final-review",
+      verdict: "pass",
+    });
+    await client.markPullRequestReady("PR_node_31");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].path, "/repos/acme/widget/issues/31/comments");
+  assert.match(
+    requests[0].body.body,
+    /^<!-- sandcastle-final-review\n\{.+\}\n-->$/u,
+  );
+  assert.equal(requests[1].path, "/graphql");
+  assert.deepEqual(requests[1].body.variables, {
+    pullRequestId: "PR_node_31",
+  });
 });

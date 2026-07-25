@@ -9,9 +9,13 @@ import {
   type ProcessingRunOperation,
 } from "./continuation.js";
 import { runWithTicketDeadline } from "./deadline.js";
+import { orchestrateFirstFinalReview } from "./final-review.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
-import { NodeTicketHost } from "./host-boundary.js";
+import {
+  NodeFinalReviewHost,
+  NodeTicketHost,
+} from "./host-boundary.js";
 import {
   executeProcessingRun,
   type CommandSpec,
@@ -111,6 +115,39 @@ async function main(): Promise<void> {
   }
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
+  if (operation === "final-review") {
+    const github = new RestGitHubHost(process.env);
+    const result = await orchestrateFirstFinalReview(
+      {
+        baseBranch: config.repository.baseBranch,
+        commands: config.commands,
+        environment: process.env,
+        expectedHead: option("--expected-head") ?? "",
+        integrationBranch: config.repository.integrationBranch,
+        model: config.models.finalReview,
+        predecessorRunId: option("--predecessor-run-id") ?? "",
+        promptFile: join(
+          repository,
+          ".sandcastle",
+          "prompts",
+          "final-review.md",
+        ),
+      },
+      new NodeFinalReviewHost(repository, process.env, github),
+      () =>
+        activateAndSelectFrontier(
+          github,
+          {
+            ownership: config.queue.ownershipLabel,
+            ready: config.queue.readyLabel,
+          },
+          false,
+        ),
+    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exitCode = result.status === "conflict" ? 4 : 0;
+    return;
+  }
   if (isProcessingOperation(operation)) {
     const expectedHead = option("--expected-head") || undefined;
     const predecessorRunId = option("--predecessor-run-id") || undefined;

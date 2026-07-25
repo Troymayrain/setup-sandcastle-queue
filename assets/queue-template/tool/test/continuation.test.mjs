@@ -34,6 +34,9 @@ function fixture({
       async dispatchContinuation(payload) {
         events.push(["dispatch", payload]);
       },
+      async dispatchFinalReview(payload) {
+        events.push(["finalReview", payload]);
+      },
       async remoteHead(branch) {
         events.push(["head", branch]);
         return currentHead;
@@ -159,6 +162,34 @@ test("reconciled publication dispatches from fresh facts without rerunning an Ag
   assert.equal(result.status, "continued");
   assert.equal(state.events.some(([name]) => name === "agent"), false);
   assert.equal(state.events.some(([name]) => name === "dispatch"), true);
+});
+
+test("confirmed progress dispatches Final Review only when the activated Queue is empty", async () => {
+  const state = fixture({
+    frontier: [
+      { activated: [], body: "last", status: "ready", ticket: 2 },
+      { activated: [], reason: "empty", status: "waiting" },
+    ],
+  });
+
+  const result = await orchestrateProcessingRun(
+    options(),
+    state.boundary,
+    state.dependencies,
+  );
+
+  assert.equal(result.status, "final-review-dispatched");
+  assert.deepEqual(state.events.at(-1), [
+    "finalReview",
+    {
+      inputs: {
+        expected_head: newHead,
+        operation: "final-review",
+        predecessor_run_id: "9001",
+      },
+      ref: "main",
+    },
+  ]);
 });
 
 test("a required dispatch failure fails the current work unit", async () => {

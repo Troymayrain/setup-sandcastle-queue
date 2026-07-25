@@ -1,5 +1,6 @@
 export interface IntegrationPullRequest {
   draft: boolean;
+  nodeId?: string;
   number: number;
   state?: string;
   url: string;

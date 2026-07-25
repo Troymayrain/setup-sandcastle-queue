@@ -24,6 +24,14 @@ export interface ContinuationBoundary {
     };
     ref: string;
   }): Promise<void>;
+  dispatchFinalReview(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-review";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void>;
   remoteHead(branch: string): Promise<string | null>;
 }
 
@@ -52,6 +60,12 @@ export type WorkflowHostResult =
       head: string;
       source: "publication" | "reconciliation";
       status: "continued";
+      ticket: number;
+    }
+  | {
+      head: string;
+      source: "publication" | "reconciliation";
+      status: "final-review-dispatched";
       ticket: number;
     }
   | {
@@ -153,6 +167,22 @@ async function continueAfterProgress(
   const frontier = await dependencies.select(false);
   if (frontier.status === "conflict") return frontier;
   if (frontier.status === "waiting") {
+    if (frontier.reason === "empty") {
+      await boundary.dispatchFinalReview({
+        inputs: {
+          expected_head: progress.head,
+          operation: "final-review",
+          predecessor_run_id: options.runId,
+        },
+        ref: options.baseBranch,
+      });
+      return {
+        head: progress.head,
+        source: progress.source,
+        status: "final-review-dispatched",
+        ticket: progress.ticket,
+      };
+    }
     return {
       head: progress.head,
       reason: frontier.reason,
