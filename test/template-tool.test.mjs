@@ -60,6 +60,22 @@ test("installed Queue Template tool independently installs, typechecks, and test
   assert.equal(initialized.status, 0, initialized.stderr);
 
   const tool = join(repository, ".sandcastle", "tool");
+  const workflow = readFileSync(
+    join(repository, ".github", "workflows", "sandcastle-queue.yml"),
+    "utf8",
+  );
+  const inputBlock =
+    workflow.match(/    inputs:\n([\s\S]*?)\nconcurrency:/u)?.[1] ?? "";
+  assert.deepEqual(
+    [...inputBlock.matchAll(/^      ([a-z_]+):$/gmu)].map((match) => match[1]),
+    ["operation", "expected_head", "predecessor_run_id"],
+  );
+  assert.match(
+    workflow,
+    /concurrency:\n  group: sandcastle-queue-\$\{\{ github\.repository \}\}\n  cancel-in-progress: false/u,
+  );
+  assert.doesNotMatch(workflow, /continuation_(?:count|limit)/u);
+
   const source = readFileSync(join(tool, "src", "work-unit.ts"), "utf8");
   const lock = JSON.parse(readFileSync(join(tool, "package-lock.json"), "utf8"));
   assert.match(source, /from "@ai-hero\/sandcastle"/u);
@@ -85,7 +101,7 @@ test("installed Queue Template tool independently installs, typechecks, and test
     stdio: "pipe",
   });
 
-  const prematureContinuation = spawnSync(
+  const invalidContinuation = spawnSync(
     process.execPath,
     [
       join(tool, "dist", "index.js"),
@@ -96,9 +112,9 @@ test("installed Queue Template tool independently installs, typechecks, and test
     ],
     { cwd: tool, encoding: "utf8" },
   );
-  assert.equal(prematureContinuation.status, 4);
-  assert.deepEqual(JSON.parse(prematureContinuation.stdout), {
-    reason: "continuation-not-yet-enabled",
+  assert.equal(invalidContinuation.status, 4);
+  assert.deepEqual(JSON.parse(invalidContinuation.stdout), {
+    reason: "invalid-operation-binding",
     status: "conflict",
   });
 

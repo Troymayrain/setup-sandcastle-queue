@@ -19,6 +19,7 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
       html_url: "https://example.invalid/pr/31",
       number: 31,
     },
+    undefined,
   ];
   globalThis.fetch = async (url, input) => {
     requests.push({
@@ -26,10 +27,14 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
       method: input.method,
       path: new URL(url).pathname + new URL(url).search,
     });
-    return new Response(JSON.stringify(responses.shift()), {
+    const response = responses.shift();
+    return new Response(
+      response === undefined ? null : JSON.stringify(response),
+      {
       headers: { "content-type": "application/json" },
-      status: 200,
-    });
+        status: response === undefined ? 204 : 200,
+      },
+    );
   };
 
   try {
@@ -67,13 +72,21 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
       ).draft,
       true,
     );
+    await client.dispatchContinuation({
+      inputs: {
+        expected_head: head,
+        operation: "continue",
+        predecessor_run_id: "9001",
+      },
+      ref: "main",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.deepEqual(
     requests.map(({ method }) => method),
-    ["GET", "POST", "POST", "PATCH", "GET", "POST"],
+    ["GET", "POST", "POST", "PATCH", "GET", "POST", "POST"],
   );
   assert.deepEqual(requests[1].body, {
     ref: "refs/heads/sandcastle/integration",
@@ -92,4 +105,16 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
     head: "sandcastle/integration",
     title: "Sandcastle Queue integration",
   });
+  assert.deepEqual(requests[6].body, {
+    inputs: {
+      expected_head: head,
+      operation: "continue",
+      predecessor_run_id: "9001",
+    },
+    ref: "main",
+  });
+  assert.match(
+    requests[6].path,
+    /actions\/workflows\/sandcastle-queue\.yml\/dispatches$/u,
+  );
 });

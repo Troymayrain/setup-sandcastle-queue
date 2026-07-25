@@ -246,4 +246,19 @@ export class RestGitHubHost implements FrontierGitHub {
       url: result.html_url,
     };
   }
+
+  async dispatchContinuation(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "continue";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    await this.#request(
+      "POST",
+      `/repos/${this.#repository}/actions/workflows/sandcastle-queue.yml/dispatches`,
+      payload,
+    );
+  }
 }
