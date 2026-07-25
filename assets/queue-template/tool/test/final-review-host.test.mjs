@@ -72,6 +72,8 @@ test("temporary Final Review merge applies Integration HEAD onto latest base", a
       ),
       [baseHead, integrationHead],
     );
+    assert.equal(await temporary.includes(integrationHead), true);
+    assert.equal(await temporary.includes("f".repeat(40)), false);
     assert.equal(await temporary.unchanged(), true);
   } finally {
     await temporary.remove();

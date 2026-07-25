@@ -4,7 +4,11 @@ import type {
   IntegrationPullRequest,
 } from "./integration-pull-request.js";
 import {
+  renderFinalFixMarker,
+  renderFinalRereviewMarker,
   renderFinalReviewMarker,
+  type FinalFixMarker,
+  type FinalRereviewMarker,
   type FinalReviewMarker,
 } from "./final-review-facts.js";
 import { renderPublicationMarker } from "./publication-facts.js";
@@ -350,10 +354,36 @@ export class RestGitHubHost implements FrontierGitHub {
     await this.#dispatchQueueWorkflow(payload);
   }
 
+  async dispatchFinalFix(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-fix";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    await this.#dispatchQueueWorkflow(payload);
+  }
+
+  async dispatchFinalRereview(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-rereview";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    await this.#dispatchQueueWorkflow(payload);
+  }
+
   async #dispatchQueueWorkflow(payload: {
     inputs: {
       expected_head: string;
-      operation: "continue" | "final-review";
+      operation:
+        | "continue"
+        | "final-fix"
+        | "final-rereview"
+        | "final-review";
       predecessor_run_id: string;
     };
     ref: string;
@@ -378,6 +408,38 @@ export class RestGitHubHost implements FrontierGitHub {
     );
     if (!Number.isSafeInteger(result.id) || (result.id ?? 0) <= 0) {
       throw new Error("GitHub omitted the immutable Final Review Marker identity.");
+    }
+    return { id: result.id! };
+  }
+
+  async createFinalFixMarker(
+    pullRequest: number,
+    marker: FinalFixMarker,
+  ): Promise<{ id: number }> {
+    const result = await this.#request<{ id?: number }>(
+      "POST",
+      `/repos/${this.#repository}/issues/${pullRequest}/comments`,
+      { body: renderFinalFixMarker(marker) },
+    );
+    if (!Number.isSafeInteger(result.id) || (result.id ?? 0) <= 0) {
+      throw new Error("GitHub omitted the immutable Final Fix Marker identity.");
+    }
+    return { id: result.id! };
+  }
+
+  async createFinalRereviewMarker(
+    pullRequest: number,
+    marker: FinalRereviewMarker,
+  ): Promise<{ id: number }> {
+    const result = await this.#request<{ id?: number }>(
+      "POST",
+      `/repos/${this.#repository}/issues/${pullRequest}/comments`,
+      { body: renderFinalRereviewMarker(marker) },
+    );
+    if (!Number.isSafeInteger(result.id) || (result.id ?? 0) <= 0) {
+      throw new Error(
+        "GitHub omitted the immutable Final Rereview Marker identity.",
+      );
     }
     return { id: result.id! };
   }

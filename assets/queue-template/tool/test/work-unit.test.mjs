@@ -29,7 +29,9 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
       rawPaths.push(options.logging.path);
       assert.equal(statSync(options.logging.path).mode & 0o777, 0o600);
       writeFileSync(options.logging.path, "temporary raw stream\n");
-      const review = options.name === "queue-final-review";
+      const review =
+        options.name === "queue-final-review" ||
+        options.name === "queue-final-rereview";
       return {
         branch: "sandcastle/integration",
         commits: review ? [] : [{ sha: `${nextSession}`.padStart(40, "a") }],
@@ -70,7 +72,7 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     assert.equal(options.sandbox.options.containerGid, 1000);
   }
   assert.equal(observed[1].agent.options.permissionMode, "plan");
-  assert.equal(observed[3].agent.options.permissionMode, undefined);
+  assert.equal(observed[3].agent.options.permissionMode, "plan");
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
   assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {
     jsonLines: 1,

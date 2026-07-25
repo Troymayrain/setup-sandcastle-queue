@@ -1,8 +1,8 @@
 import { withoutExecutionCredentials } from "./credential-environment.js";
-import type { FrontierResult } from "./frontier.js";
 import {
-  renderFinalReviewMarker,
-  type FinalReviewMarker,
+  renderFinalRereviewMarker,
+  type FinalFixMarker,
+  type FinalRereviewMarker,
 } from "./final-review-facts.js";
 import {
   leaveFinalization,
@@ -10,6 +10,7 @@ import {
   scanFinalizationMarkers,
   type FinalizationComment,
 } from "./finalization.js";
+import type { FrontierResult } from "./frontier.js";
 import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import type { CommandSpec } from "./processing-run.js";
 import {
@@ -25,14 +26,15 @@ interface TemporaryMerge {
   baseHead: string;
   integrationHead: string;
   path: string;
+  includes(commit: string): Promise<boolean>;
   remove(): Promise<void>;
   unchanged(): Promise<boolean>;
 }
 
-export interface FinalReviewBoundary {
-  createFinalReviewMarker(
+export interface FinalRereviewBoundary {
+  createFinalRereviewMarker(
     pullRequest: number,
-    marker: FinalReviewMarker,
+    marker: FinalRereviewMarker,
   ): Promise<{ id: number }>;
   createTemporaryMerge(input: {
     baseBranch: string;
@@ -43,14 +45,6 @@ export interface FinalReviewBoundary {
     inputs: {
       expected_head: string;
       operation: "continue";
-      predecessor_run_id: string;
-    };
-    ref: string;
-  }): Promise<void>;
-  dispatchFinalFix(payload: {
-    inputs: {
-      expected_head: string;
-      operation: "final-fix";
       predecessor_run_id: string;
     };
     ref: string;
@@ -69,7 +63,7 @@ export interface FinalReviewBoundary {
   ): Promise<void>;
 }
 
-export interface FirstFinalReviewOptions {
+export interface FinalRereviewOptions {
   baseBranch: string;
   commands: {
     bootstrap: CommandSpec[];
@@ -84,11 +78,11 @@ export interface FirstFinalReviewOptions {
   promptFile: string;
 }
 
-export type FirstFinalReviewResult =
+export type FinalRereviewResult =
   | {
       actualHead: string | null;
       expectedHead: string;
-      status: "stale-final-review";
+      status: "stale-final-rereview";
     }
   | { reason: string; status: "conflict" }
   | { reason: "assigned" | "blocked"; status: "waiting" }
@@ -99,68 +93,36 @@ export type FirstFinalReviewResult =
       markerCommentId: number;
       pullRequest: number;
       sessionId: string;
-      status:
-        | "final-fix-dispatched"
-        | "needs-human-review"
-        | "ready-for-human-review";
+      status: "needs-human-review" | "ready-for-human-review";
       verdict: "needs-fix" | "pass";
     };
 
 type WorkUnitExecutor = (options: WorkUnitOptions) => Promise<WorkUnitResult>;
 
-function conflict(reason: string): FirstFinalReviewResult {
+function conflict(reason: string): FinalRereviewResult {
   return { reason, status: "conflict" };
 }
 
-function inspectFinalReviewMarker(
-  comments: FinalizationComment[],
-  expected: FinalReviewMarker,
-):
-  | { status: "conflict" }
-  | { status: "none" }
-  | { id: number; status: "exact" } {
-  const scanned = scanFinalizationMarkers(comments);
-  if (!scanned) return { status: "conflict" };
-  const markers = scanned.reviews;
-  if (markers.length === 0) return { status: "none" };
-  const exact = markers.filter(
-    ({ marker }) =>
-      renderFinalReviewMarker(marker) === renderFinalReviewMarker(expected),
-  );
-  if (exact.length === 1) {
-    return { id: exact[0]!.id, status: "exact" };
-  }
-  if (exact.length > 1) return { status: "conflict" };
-  return markers.some(
-    ({ marker }) =>
-      marker.integrationHead === expected.integrationHead ||
-      marker.runId === expected.runId,
-  )
-    ? { status: "conflict" }
-    : { status: "none" };
-}
-
-export async function orchestrateFirstFinalReview(
-  options: FirstFinalReviewOptions,
-  boundary: FinalReviewBoundary,
+export async function orchestrateFinalRereview(
+  options: FinalRereviewOptions,
+  boundary: FinalRereviewBoundary,
   select: () => Promise<FrontierResult>,
   runWorkUnit: WorkUnitExecutor = executeWorkUnit,
-): Promise<FirstFinalReviewResult> {
+): Promise<FinalRereviewResult> {
   const runId = options.environment.GITHUB_RUN_ID;
   if (
     !objectIdPattern.test(options.expectedHead) ||
     !runIdPattern.test(runId ?? "") ||
     !runIdPattern.test(options.predecessorRunId)
   ) {
-    return conflict("invalid-final-review-binding");
+    return conflict("invalid-final-rereview-binding");
   }
-
   const actualHead = await boundary.remoteHead(options.integrationBranch);
   if (actualHead !== options.expectedHead) {
     return {
       actualHead,
       expectedHead: options.expectedHead,
-      status: "stale-final-review",
+      status: "stale-final-rereview",
     };
   }
   const stopped = await leaveFinalization(
@@ -173,67 +135,6 @@ export async function orchestrateFirstFinalReview(
     (payload) => boundary.dispatchContinuation(payload),
   );
   if (stopped) return stopped;
-
-  const temporary = await boundary.createTemporaryMerge({
-    baseBranch: options.baseBranch,
-    expectedIntegrationHead: options.expectedHead,
-    integrationBranch: options.integrationBranch,
-  });
-  let review: WorkUnitResult;
-  let temporaryUnchanged = false;
-  try {
-    const commandEnvironment = withoutExecutionCredentials(options.environment);
-    await runCommandGroups(
-      [
-        options.commands.bootstrap,
-        options.commands.test,
-        options.commands.verification,
-      ],
-      (argv) =>
-        boundary.runCommand(temporary.path, argv, commandEnvironment),
-    );
-    review = await runWorkUnit({
-      cwd: temporary.path,
-      environment: options.environment,
-      model: options.model,
-      promptFile: options.promptFile,
-      role: "final-review",
-    });
-    temporaryUnchanged = await temporary.unchanged();
-  } finally {
-    await temporary.remove();
-  }
-  if (
-    temporary.integrationHead !== options.expectedHead ||
-    !objectIdPattern.test(temporary.baseHead) ||
-    review.role !== "final-review" ||
-    review.commits.length !== 0 ||
-    !temporaryUnchanged ||
-    (review.verdict !== "pass" && review.verdict !== "needs-fix")
-  ) {
-    throw new Error("Final Review did not produce a read-only exact verdict.");
-  }
-
-  const [visibleIntegrationHead, visibleBaseHead] = await Promise.all([
-    boundary.remoteHead(options.integrationBranch),
-    boundary.remoteHead(options.baseBranch),
-  ]);
-  if (
-    visibleIntegrationHead !== options.expectedHead ||
-    visibleBaseHead !== temporary.baseHead
-  ) {
-    return conflict("final-review-head-changed");
-  }
-  const finalBoundary = await leaveFinalization(
-    await select(),
-    {
-      baseBranch: options.baseBranch,
-      expectedHead: options.expectedHead,
-      runId: runId!,
-    },
-    (payload) => boundary.dispatchContinuation(payload),
-  );
-  if (finalBoundary) return finalBoundary;
 
   const pullRequests = await boundary.listIntegrationPullRequests({
     base: options.baseBranch,
@@ -250,56 +151,128 @@ export async function orchestrateFirstFinalReview(
   ) {
     return conflict("unique-draft-integration-pull-request-required");
   }
-  const marker: FinalReviewMarker = {
+  const existing = scanFinalizationMarkers(
+    await boundary.listIssueComments(pullRequest.number),
+  );
+  if (
+    !existing ||
+    existing.rereviews.length > 0 ||
+    existing.fixes.length !== 1
+  ) {
+    return conflict("final-rereview-authorization-unprovable-or-consumed");
+  }
+  const fixMarker = existing.fixes[0]!.marker;
+  if (
+    fixMarker.afterHead === options.expectedHead &&
+    fixMarker.runId !== options.predecessorRunId
+  ) {
+    return conflict("final-rereview-authorization-unprovable-or-consumed");
+  }
+
+  const temporary = await boundary.createTemporaryMerge({
+    baseBranch: options.baseBranch,
+    expectedIntegrationHead: options.expectedHead,
+    integrationBranch: options.integrationBranch,
+  });
+  let workUnit: WorkUnitResult;
+  let includesFix = false;
+  let unchanged = false;
+  try {
+    includesFix = await temporary.includes(fixMarker.afterHead);
+    await runCommandGroups(
+      [
+        options.commands.bootstrap,
+        options.commands.test,
+        options.commands.verification,
+      ],
+      (argv) =>
+        boundary.runCommand(
+          temporary.path,
+          argv,
+          withoutExecutionCredentials(options.environment),
+        ),
+    );
+    workUnit = await runWorkUnit({
+      cwd: temporary.path,
+      environment: options.environment,
+      model: options.model,
+      promptFile: options.promptFile,
+      role: "final-rereview",
+    });
+    unchanged = await temporary.unchanged();
+  } finally {
+    await temporary.remove();
+  }
+  if (
+    temporary.integrationHead !== options.expectedHead ||
+    !objectIdPattern.test(temporary.baseHead) ||
+    workUnit.role !== "final-rereview" ||
+    !includesFix ||
+    workUnit.sessionId === fixMarker.sessionId ||
+    workUnit.commits.length !== 0 ||
+    !unchanged ||
+    (workUnit.verdict !== "pass" && workUnit.verdict !== "needs-fix")
+  ) {
+    throw new Error(
+      "Final Rereview must be an independent read-only exact verdict.",
+    );
+  }
+
+  const [visibleIntegrationHead, visibleBaseHead] = await Promise.all([
+    boundary.remoteHead(options.integrationBranch),
+    boundary.remoteHead(options.baseBranch),
+  ]);
+  if (
+    visibleIntegrationHead !== options.expectedHead ||
+    visibleBaseHead !== temporary.baseHead
+  ) {
+    return conflict("final-rereview-head-changed");
+  }
+  const finalBoundary = await leaveFinalization(
+    await select(),
+    {
+      baseBranch: options.baseBranch,
+      expectedHead: options.expectedHead,
+      runId: runId!,
+    },
+    (payload) => boundary.dispatchContinuation(payload),
+  );
+  if (finalBoundary) return finalBoundary;
+
+  const marker: FinalRereviewMarker = {
     baseHead: temporary.baseHead,
+    fixRunId: fixMarker.runId,
     integrationHead: options.expectedHead,
     runId: runId!,
     schemaVersion: 1,
-    type: "sandcastle-final-review",
-    verdict: review.verdict,
+    type: "sandcastle-final-rereview",
+    verdict: workUnit.verdict,
   };
-  let visibleComments = await boundary.listIssueComments(pullRequest.number);
-  let visibleMarker = inspectFinalReviewMarker(visibleComments, marker);
-  if (visibleMarker.status === "none") {
-    await boundary.createFinalReviewMarker(pullRequest.number, marker);
-    visibleComments = await boundary.listIssueComments(pullRequest.number);
-    visibleMarker = inspectFinalReviewMarker(visibleComments, marker);
+  await boundary.createFinalRereviewMarker(pullRequest.number, marker);
+  const visibleMarkers = scanFinalizationMarkers(
+    await boundary.listIssueComments(pullRequest.number),
+  );
+  const visible = visibleMarkers?.rereviews.filter(
+    ({ marker: candidate }) =>
+      renderFinalRereviewMarker(candidate) ===
+      renderFinalRereviewMarker(marker),
+  );
+  if (!visibleMarkers || visible?.length !== 1) {
+    return conflict("final-rereview-marker-not-unique-or-visible");
   }
-  if (visibleMarker.status !== "exact") {
-    return conflict("final-review-marker-not-unique-or-visible");
-  }
-  let priorFix = false;
-  if (review.verdict === "pass") {
+  if (workUnit.verdict === "pass") {
     await boundary.markPullRequestReady(pullRequest.nodeId);
-  } else {
-    const history = scanFinalizationMarkers(visibleComments);
-    if (!history) {
-      return conflict("final-fix-history-unprovable");
-    }
-    priorFix = history.fixes.length > 0;
-    if (!priorFix) {
-      await boundary.dispatchFinalFix({
-        inputs: {
-          expected_head: options.expectedHead,
-          operation: "final-fix",
-          predecessor_run_id: runId!,
-        },
-        ref: options.baseBranch,
-      });
-    }
   }
   return {
     baseHead: temporary.baseHead,
     integrationHead: options.expectedHead,
-    markerCommentId: visibleMarker.id,
+    markerCommentId: visible![0]!.id,
     pullRequest: pullRequest.number,
-    sessionId: review.sessionId,
+    sessionId: workUnit.sessionId,
     status:
-      review.verdict === "pass"
+      workUnit.verdict === "pass"
         ? "ready-for-human-review"
-        : priorFix
-          ? "needs-human-review"
-          : "final-fix-dispatched",
-    verdict: review.verdict,
+        : "needs-human-review",
+    verdict: workUnit.verdict,
   };
 }

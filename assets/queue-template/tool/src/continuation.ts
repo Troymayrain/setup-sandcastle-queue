@@ -1,4 +1,5 @@
 import type { FrontierResult } from "./frontier.js";
+import type { NextFinalOperation } from "./finalization.js";
 import type { ReconciliationResult } from "./reconciliation.js";
 
 const objectIdPattern = /^[0-9a-f]{40}$/u;
@@ -32,6 +33,14 @@ export interface ContinuationBoundary {
     };
     ref: string;
   }): Promise<void>;
+  dispatchFinalRereview(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-rereview";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void>;
   remoteHead(branch: string): Promise<string | null>;
 }
 
@@ -44,6 +53,7 @@ export interface ProcessingRunDependencies {
     status: string;
     ticket: number;
   }>;
+  finalize(): Promise<NextFinalOperation>;
   reconcile(): Promise<ReconciliationResult>;
   select(activate: boolean): Promise<FrontierResult>;
 }
@@ -65,7 +75,7 @@ export type WorkflowHostResult =
   | {
       head: string;
       source: "publication" | "reconciliation";
-      status: "final-review-dispatched";
+      status: "final-rereview-dispatched" | "final-review-dispatched";
       ticket: number;
     }
   | {
@@ -168,18 +178,39 @@ async function continueAfterProgress(
   if (frontier.status === "conflict") return frontier;
   if (frontier.status === "waiting") {
     if (frontier.reason === "empty") {
-      await boundary.dispatchFinalReview({
+      const finalization = await dependencies.finalize();
+      if (finalization.status === "conflict") return finalization;
+      const payload = {
         inputs: {
           expected_head: progress.head,
-          operation: "final-review",
           predecessor_run_id: options.runId,
         },
         ref: options.baseBranch,
-      });
+      };
+      if (finalization.operation === "final-rereview") {
+        await boundary.dispatchFinalRereview({
+          ...payload,
+          inputs: {
+            ...payload.inputs,
+            operation: "final-rereview",
+          },
+        });
+      } else {
+        await boundary.dispatchFinalReview({
+          ...payload,
+          inputs: {
+            ...payload.inputs,
+            operation: "final-review",
+          },
+        });
+      }
       return {
         head: progress.head,
         source: progress.source,
-        status: "final-review-dispatched",
+        status:
+          finalization.operation === "final-rereview"
+            ? "final-rereview-dispatched"
+            : "final-review-dispatched",
         ticket: progress.ticket,
       };
     }

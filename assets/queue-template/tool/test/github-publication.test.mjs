@@ -173,3 +173,74 @@ test("Final Review marker creation and ready transition use distinct non-retried
     pullRequestId: "PR_node_31",
   });
 });
+
+test("Final Fix and Rereview use immutable PR markers and bound workflow dispatches", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const responses = [{ id: 73 }, { id: 74 }, undefined, undefined];
+  globalThis.fetch = async (url, input) => {
+    requests.push({
+      body: JSON.parse(input.body),
+      path: new URL(url).pathname,
+    });
+    const response = responses.shift();
+    return new Response(
+      response === undefined ? null : JSON.stringify(response),
+      { status: response === undefined ? 204 : 200 },
+    );
+  };
+
+  try {
+    const client = new RestGitHubHost({
+      GITHUB_REPOSITORY: "acme/widget",
+      GITHUB_TOKEN: "github-secret",
+    });
+    await client.createFinalFixMarker(31, {
+      afterHead: head,
+      beforeHead: "b".repeat(40),
+      reviewRunId: "9002",
+      runId: "9003",
+      schemaVersion: 1,
+      sessionId: "fix-session",
+      type: "sandcastle-final-fix",
+    });
+    await client.createFinalRereviewMarker(31, {
+      baseHead: "b".repeat(40),
+      fixRunId: "9003",
+      integrationHead: head,
+      runId: "9004",
+      schemaVersion: 1,
+      type: "sandcastle-final-rereview",
+      verdict: "needs-fix",
+    });
+    await client.dispatchFinalFix({
+      inputs: {
+        expected_head: "b".repeat(40),
+        operation: "final-fix",
+        predecessor_run_id: "9002",
+      },
+      ref: "main",
+    });
+    await client.dispatchFinalRereview({
+      inputs: {
+        expected_head: head,
+        operation: "final-rereview",
+        predecessor_run_id: "9003",
+      },
+      ref: "main",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.match(requests[0].body.body, /sandcastle-final-fix/u);
+  assert.match(requests[1].body.body, /sandcastle-final-rereview/u);
+  assert.equal(requests[2].body.inputs.operation, "final-fix");
+  assert.equal(requests[3].body.inputs.operation, "final-rereview");
+  assert.equal(
+    requests.every(({ path }) =>
+      /issues\/31\/comments|sandcastle-queue\.yml\/dispatches/u.test(path),
+    ),
+    true,
+  );
+});

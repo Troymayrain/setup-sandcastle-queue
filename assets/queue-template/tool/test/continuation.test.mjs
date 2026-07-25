@@ -37,12 +37,19 @@ function fixture({
       async dispatchFinalReview(payload) {
         events.push(["finalReview", payload]);
       },
+      async dispatchFinalRereview(payload) {
+        events.push(["finalRereview", payload]);
+      },
       async remoteHead(branch) {
         events.push(["head", branch]);
         return currentHead;
       },
     },
     dependencies: {
+      async finalize() {
+        events.push(["finalize"]);
+        return { operation: "final-review", status: "ready" };
+      },
       async process(ticket) {
         events.push(["agent", ticket]);
         return { completionCommit: newHead, status: "published", ticket: ticket.number };
@@ -185,6 +192,37 @@ test("confirmed progress dispatches Final Review only when the activated Queue i
       inputs: {
         expected_head: newHead,
         operation: "final-review",
+        predecessor_run_id: "9001",
+      },
+      ref: "main",
+    },
+  ]);
+});
+
+test("Queue completion after a Final Fix resumes independent Rereview", async () => {
+  const state = fixture({
+    frontier: [
+      { activated: [], body: "late Ticket", status: "ready", ticket: 3 },
+      { activated: [], reason: "empty", status: "waiting" },
+    ],
+  });
+  state.dependencies.finalize = async () => {
+    state.events.push(["finalize"]);
+    return { operation: "final-rereview", status: "ready" };
+  };
+
+  await orchestrateProcessingRun(
+    options(),
+    state.boundary,
+    state.dependencies,
+  );
+
+  assert.deepEqual(state.events.at(-1), [
+    "finalRereview",
+    {
+      inputs: {
+        expected_head: newHead,
+        operation: "final-rereview",
         predecessor_run_id: "9001",
       },
       ref: "main",
