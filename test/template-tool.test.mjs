@@ -85,6 +85,23 @@ test("installed Queue Template tool independently installs, typechecks, and test
     stdio: "pipe",
   });
 
+  const prematureContinuation = spawnSync(
+    process.execPath,
+    [
+      join(tool, "dist", "index.js"),
+      "--operation",
+      "continue",
+      "--repository",
+      repository,
+    ],
+    { cwd: tool, encoding: "utf8" },
+  );
+  assert.equal(prematureContinuation.status, 4);
+  assert.deepEqual(JSON.parse(prematureContinuation.stdout), {
+    reason: "continuation-not-yet-enabled",
+    status: "conflict",
+  });
+
   const installedConfigPath = join(repository, ".sandcastle", "config.json");
   const invalidConfig = JSON.parse(readFileSync(installedConfigPath, "utf8"));
   invalidConfig.unknownSecret = "never-print-this-secret";

@@ -15,7 +15,7 @@ export interface FrontierGitHub {
 }
 
 export type FrontierResult =
-  | { activated: number[]; status: "ready"; ticket: number }
+  | { activated: number[]; body: string; status: "ready"; ticket: number }
   | { activated: number[]; reason: "assigned" | "blocked" | "empty"; status: "waiting" }
   | { activated: number[]; reason: string; status: "conflict" };
 
@@ -113,7 +113,7 @@ export async function activateAndSelectFrontier(
 
   const refreshedList = await allOpenIssues(client);
   let waitingReason: "assigned" | "blocked" | "empty" = "empty";
-  const executable: number[] = [];
+  const executable: GitHubIssue[] = [];
   for (const snapshot of refreshedList.sort((left, right) => left.number - right.number)) {
     const issue = await client.getIssue(snapshot.number);
     if (issue.number !== snapshot.number || !Array.isArray(issue.labels)) {
@@ -144,10 +144,15 @@ export async function activateAndSelectFrontier(
       waitingReason = "blocked";
       continue;
     }
-    executable.push(snapshot.number);
+    executable.push(issue);
   }
   if (executable[0] !== undefined) {
-    return { activated, status: "ready", ticket: executable[0] };
+    return {
+      activated,
+      body: executable[0].body!,
+      status: "ready",
+      ticket: executable[0].number,
+    };
   }
   return { activated, reason: waitingReason, status: "waiting" };
 }
