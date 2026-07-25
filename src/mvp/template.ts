@@ -100,7 +100,8 @@ export function renderQueueTemplate(config: QueueConfig): TemplateAsset[] {
     },
     {
       path: ".sandcastle/prompts/final-fix.md",
-      content: "# Final fix\n\nFix the findings authorized for the reviewed Integration HEAD.\n",
+      content:
+        "# Final fix\n\nFix the findings authorized for the reviewed Integration Branch HEAD.\n",
     },
     {
       path: ".sandcastle/tool/package.json",

@@ -38,8 +38,11 @@ async function inspect(root: string, assets: TemplateAsset[]): Promise<Inventory
         inventory.conflicting.push(asset.path);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
         inventory.missing.push(asset.path);
+      } else if (code === "ENOTDIR") {
+        inventory.conflicting.push(asset.path);
       } else {
         throw new CliError(3, "INSTALLATION_INSPECTION_FAILED", "Unable to inspect installation paths.");
       }

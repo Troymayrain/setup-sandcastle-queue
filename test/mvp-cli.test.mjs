@@ -94,6 +94,8 @@ test("public CLI exposes only init, doctor, help, and version", () => {
   const help = run(repository, ["--help"]);
   const version = run(repository, ["--version"]);
   const legacy = run(repository, ["plan"]);
+  const alias = run(repository, ["-h"]);
+  const extra = run(repository, ["doctor", "--offline", "--bogus"]);
 
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /init/u);
@@ -102,6 +104,8 @@ test("public CLI exposes only init, doctor, help, and version", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(version.stdout.trim(), packageMetadata.version);
   assert.equal(legacy.status, 2);
+  assert.equal(alias.status, 2);
+  assert.equal(extra.status, 2);
 });
 
 test("init previews and installs only the Queue Template namespaces", () => {
@@ -197,6 +201,21 @@ test("strict configuration fails closed without echoing unknown secret values", 
   assert.equal(result.status, 2);
   assert.equal(result.stdout.includes("never-print-this-secret"), false);
   assert.equal(JSON.parse(result.stdout).code, "CONFIG_INVALID");
+
+  const missing = writeConfig(repository, (value) => {
+    delete value.models.finalFix;
+  });
+  assert.equal(run(repository, ["init", "--config", missing]).status, 2);
+
+  const unsupported = writeConfig(repository, (value) => {
+    value.schemaVersion = 2;
+  });
+  assert.equal(run(repository, ["init", "--config", unsupported]).status, 2);
+
+  assert.equal(
+    run(repository, ["init", "--config", join(repository, "absent.json")]).status,
+    3,
+  );
 });
 
 test("doctor --offline is read-only and marks remote checks not-run", () => {
@@ -224,4 +243,25 @@ test("doctor --offline is read-only and marks remote checks not-run", () => {
     ),
     before,
   );
+
+  const full = run(repository, ["doctor", "--json"]);
+  assert.equal(full.status, 4);
+  assert.equal(JSON.parse(full.stdout).mode, "full");
+  assert.deepEqual(JSON.parse(full.stdout).checks.remote, {
+    code: "REMOTE_NOT_CONFIGURED",
+    status: "fail",
+  });
+});
+
+test("init reports a parent-path collision as an exact conflict inventory", () => {
+  const repository = createRepository();
+  const config = writeConfig(repository);
+  writeFileSync(join(repository, ".sandcastle"), "occupied\n");
+
+  const result = run(repository, ["init", "--config", config]);
+
+  assert.equal(result.status, 4);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.code, "INSTALLATION_PARTIAL");
+  assert.ok(output.inventory.conflicting.includes(".sandcastle/config.json"));
 });

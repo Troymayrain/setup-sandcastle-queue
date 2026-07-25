@@ -40,17 +40,21 @@ async function confirm(): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  if (command === "--help" || command === "-h" || command === undefined) {
+  if (command === undefined) {
     process.stdout.write(help);
     return;
   }
-  if (command === "--version" || command === "-v") {
+  if (command === "--help" && args.length === 1) {
+    process.stdout.write(help);
+    return;
+  }
+  if (command === "--version" && args.length === 1) {
     process.stdout.write(`${VERSION}\n`);
     return;
   }
   if (command === "init") {
     const configPath = option("--config");
-    if (!configPath) {
+    if (!configPath || args.length !== 3 || args[1] !== "--config") {
       throw new CliError(2, "CLI_USAGE_ERROR", "init requires --config <path>.");
     }
     const config = await readQueueConfig(configPath);
@@ -69,14 +73,26 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "doctor") {
-    if (!args.includes("--offline")) {
-      throw new CliError(
-        4,
-        "REMOTE_CHECKS_UNAVAILABLE",
-        "Full doctor requires GitHub resources configured by a later installation step.",
-      );
+    const flags = args.slice(1);
+    if (
+      flags.some((flag) => flag !== "--offline" && flag !== "--json") ||
+      new Set(flags).size !== flags.length
+    ) {
+      throw new CliError(2, "CLI_USAGE_ERROR", "doctor accepts only --offline and --json.");
     }
-    const result = await doctorOffline(process.cwd());
+    const offline = args.includes("--offline");
+    const local = await doctorOffline(process.cwd());
+    const result = offline
+      ? local
+      : {
+          ...local,
+          checks: {
+            ...local.checks,
+            remote: { code: "REMOTE_NOT_CONFIGURED", status: "fail" as const },
+          },
+          mode: "full" as const,
+          ok: false,
+        };
     if (args.includes("--json")) {
       writeJson(result);
     } else {
