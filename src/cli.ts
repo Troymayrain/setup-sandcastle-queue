@@ -33,6 +33,7 @@ async function confirm(): Promise<boolean> {
   const input = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await input.question("Apply these Project-controlled Assets? Type yes to continue: ");
+    process.stdout.write("\n");
     return answer.trim().toLowerCase() === "yes";
   } finally {
     input.close();

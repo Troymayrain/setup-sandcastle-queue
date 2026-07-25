@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
+import { assertSafeAssetPath } from "../dist/mvp/installer.js";
 
 const cliPath = new URL("../dist/cli.js", import.meta.url);
 const packageMetadata = JSON.parse(
@@ -89,6 +93,44 @@ function filesUnder(root, current = root) {
   });
 }
 
+function gitControlSnapshot(repository) {
+  const read = (args) =>
+    execFileSync("git", ["-C", repository, ...args], { encoding: "utf8" });
+  return {
+    branch: read(["branch", "--show-current"]),
+    head: read(["rev-parse", "HEAD"]),
+    index: read(["ls-files", "--stage"]),
+    stash: read(["stash", "list"]),
+  };
+}
+
+function confirmAfterPrompt(repository, args, mutate) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath.pathname, ...args], {
+      cwd: repository,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let confirmed = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (!confirmed && stdout.includes("Type yes to continue:")) {
+        confirmed = true;
+        mutate();
+        child.stdin.end("yes\n");
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stderr, stdout }));
+  });
+}
+
 test("public CLI exposes only init, doctor, help, and version", () => {
   const repository = createRepository();
   const help = run(repository, ["--help"]);
@@ -111,9 +153,7 @@ test("public CLI exposes only init, doctor, help, and version", () => {
 test("init previews and installs only the Queue Template namespaces", () => {
   const repository = createRepository();
   const config = writeConfig(repository);
-  const beforeHead = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-  });
+  const beforeGit = gitControlSnapshot(repository);
 
   const result = run(repository, ["init", "--config", config], "yes\n");
 
@@ -124,12 +164,7 @@ test("init previews and installs only the Queue Template namespaces", () => {
     /diff --git a\/\.github\/workflows\/sandcastle-queue\.yml/u,
   );
   assert.match(result.stdout, /installed/u);
-  assert.equal(
-    execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
-      encoding: "utf8",
-    }),
-    beforeHead,
-  );
+  assert.deepEqual(gitControlSnapshot(repository), beforeGit);
 
   const installed = filesUnder(repository).filter(
     (path) =>
@@ -264,4 +299,79 @@ test("init reports a parent-path collision as an exact conflict inventory", () =
   const output = JSON.parse(result.stdout);
   assert.equal(output.code, "INSTALLATION_PARTIAL");
   assert.ok(output.inventory.conflicting.includes(".sandcastle/config.json"));
+});
+
+for (const staleKind of ["head", "index", "target"]) {
+  test(`init rejects a stale ${staleKind} after the preview confirmation boundary`, async () => {
+    const repository = createRepository();
+    const config = writeConfig(repository);
+    const result = await confirmAfterPrompt(
+      repository,
+      ["init", "--config", config],
+      () => {
+        if (staleKind === "head") {
+          writeFileSync(join(repository, "HEAD-CHANGE"), "changed\n");
+          execFileSync("git", ["-C", repository, "add", "HEAD-CHANGE"]);
+          execFileSync("git", [
+            "-C",
+            repository,
+            "-c",
+            "user.name=Sandcastle Test",
+            "-c",
+            "user.email=sandcastle@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "head changed",
+          ]);
+        } else if (staleKind === "index") {
+          writeFileSync(join(repository, "INDEX-CHANGE"), "changed\n");
+          execFileSync("git", ["-C", repository, "add", "INDEX-CHANGE"]);
+        } else {
+          mkdirSync(join(repository, ".sandcastle"), { recursive: true });
+          writeFileSync(join(repository, ".sandcastle", "README.md"), "occupied\n");
+        }
+      },
+    );
+
+    assert.equal(result.status, 4, result.stderr);
+    assert.equal(JSON.parse(result.stdout.slice(result.stdout.lastIndexOf("\n{") + 1)).code, "INSTALLATION_STALE");
+    assert.equal(existsSync(join(repository, ".github", "workflows", "sandcastle-queue.yml")), false);
+  });
+}
+
+test("init rolls back every installed asset when a write fails", async () => {
+  const repository = createRepository();
+  const config = writeConfig(repository);
+  mkdirSync(join(repository, ".sandcastle"));
+
+  const result = await confirmAfterPrompt(
+    repository,
+    ["init", "--config", config],
+    () => chmodSync(join(repository, ".sandcastle"), 0o500),
+  );
+  chmodSync(join(repository, ".sandcastle"), 0o700);
+
+  assert.equal(result.status, 3, result.stderr);
+  assert.equal(existsSync(join(repository, ".github", "workflows", "sandcastle-queue.yml")), false);
+  assert.deepEqual(readdirSync(join(repository, ".sandcastle")), []);
+});
+
+test("init rejects symlink parents and asset path traversal", () => {
+  const repository = createRepository();
+  const outside = mkdtempSync(join(tmpdir(), "sandcastle-outside-"));
+  const config = writeConfig(repository);
+  symlinkSync(outside, join(repository, ".sandcastle"));
+
+  const result = run(repository, ["init", "--config", config]);
+
+  assert.equal(result.status, 4);
+  assert.equal(JSON.parse(result.stdout).code, "INSTALL_PATH_SYMLINK_FORBIDDEN");
+  assert.deepEqual(readdirSync(outside), []);
+  assert.throws(() => assertSafeAssetPath(repository, "../outside"), {
+    code: "INSTALL_PATH_OUTSIDE_REPOSITORY",
+  });
+  assert.throws(() => assertSafeAssetPath(repository, "/tmp/outside"), {
+    code: "INSTALL_PATH_OUTSIDE_REPOSITORY",
+  });
 });
