@@ -133,10 +133,16 @@ async function main(): Promise<void> {
           "final-review.md",
         ),
       },
-      new NodeFinalReviewHost(repository, process.env, github, {
-        ownership: config.queue.ownershipLabel,
-        ready: config.queue.readyLabel,
-      }),
+      new NodeFinalReviewHost(repository, process.env, github),
+      () =>
+        activateAndSelectFrontier(
+          github,
+          {
+            ownership: config.queue.ownershipLabel,
+            ready: config.queue.readyLabel,
+          },
+          false,
+        ),
     );
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exitCode = result.status === "conflict" ? 4 : 0;

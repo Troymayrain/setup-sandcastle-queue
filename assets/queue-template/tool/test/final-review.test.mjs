@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { orchestrateFirstFinalReview } from "../dist/final-review.js";
-import { renderFinalReviewMarker } from "../dist/publication-facts.js";
+import { renderFinalReviewMarker } from "../dist/final-review-facts.js";
 
 const integrationHead = "1".repeat(40);
 const baseHead = "2".repeat(40);
@@ -83,10 +83,10 @@ function fixture({
     async runCommand(path, argv, environment) {
       events.push(["command", path, argv, environment]);
     },
-    async select() {
-      events.push(["frontier"]);
-      return frontier;
-    },
+  };
+  const select = async () => {
+    events.push(["frontier"]);
+    return frontier;
   };
   const runWorkUnit = async (input) => {
     events.push(["review", input]);
@@ -100,7 +100,7 @@ function fixture({
       verdict,
     };
   };
-  return { boundary, events, runWorkUnit };
+  return { boundary, events, runWorkUnit, select };
 }
 
 test("first Final Review uses a temporary latest-base merge and marks only a proven pass ready", async () => {
@@ -109,6 +109,7 @@ test("first Final Review uses a temporary latest-base merge and marks only a pro
   const result = await orchestrateFirstFinalReview(
     options(),
     state.boundary,
+    state.select,
     state.runWorkUnit,
   );
 
@@ -158,6 +159,7 @@ test("needs-fix records the immutable verdict but keeps the pull request draft",
   const result = await orchestrateFirstFinalReview(
     options(),
     state.boundary,
+    state.select,
     state.runWorkUnit,
   );
 
@@ -174,6 +176,7 @@ test("blocked work never finalizes and new executable work returns to processing
     (await orchestrateFirstFinalReview(
       options(),
       blocked.boundary,
+      blocked.select,
       blocked.runWorkUnit,
     )).status,
     "waiting",
@@ -187,6 +190,7 @@ test("blocked work never finalizes and new executable work returns to processing
     (await orchestrateFirstFinalReview(
       options(),
       ready.boundary,
+      ready.select,
       ready.runWorkUnit,
     )).status,
     "processing",
@@ -201,7 +205,7 @@ test("a Ticket observed after review returns to processing without publishing a 
     { activated: [], reason: "empty", status: "waiting" },
     { activated: [], body: "late Ticket", status: "ready", ticket: 63 },
   ];
-  state.boundary.select = async () => {
+  state.select = async () => {
     state.events.push(["frontier"]);
     return frontiers.shift();
   };
@@ -209,6 +213,7 @@ test("a Ticket observed after review returns to processing without publishing a 
   const result = await orchestrateFirstFinalReview(
     options(),
     state.boundary,
+    state.select,
     state.runWorkUnit,
   );
 
@@ -226,6 +231,7 @@ test("stale HEAD and malformed review verdict fail closed without marker or read
     (await orchestrateFirstFinalReview(
       options(),
       stale.boundary,
+      stale.select,
       stale.runWorkUnit,
     )).status,
     "stale-final-review",
@@ -236,6 +242,7 @@ test("stale HEAD and malformed review verdict fail closed without marker or read
     orchestrateFirstFinalReview(
       options(),
       malformed.boundary,
+      malformed.select,
       malformed.runWorkUnit,
     ),
     /verdict/u,

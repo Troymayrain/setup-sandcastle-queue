@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import type { FinalReviewBoundary } from "./final-review.js";
-import { activateAndSelectFrontier } from "./frontier.js";
+import type { FinalReviewMarker } from "./final-review-facts.js";
 import { RestGitHubHost } from "./github-host.js";
 import type {
   DraftPullRequest,
@@ -15,7 +15,6 @@ import type {
 import {
   completionMessage,
   type CompletionMetadata,
-  type FinalReviewMarker,
   type PublicationMarker,
 } from "./publication-facts.js";
 import type { TicketHostBoundary } from "./processing-run.js";
@@ -231,7 +230,6 @@ export class NodeTicketHost implements TicketHostBoundary {
 
 export class NodeFinalReviewHost implements FinalReviewBoundary {
   readonly #github: RestGitHubHost;
-  readonly #labels: { ownership: string; ready: string };
   readonly #localGitEnvironment: NodeJS.ProcessEnv;
   readonly #networkGitEnvironment: NodeJS.ProcessEnv;
   readonly #repository: string;
@@ -241,7 +239,7 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
     repository: string,
     environment: NodeJS.ProcessEnv,
     github: RestGitHubHost,
-    labels: { ownership: string; ready: string },
+    remoteUrl?: string,
   ) {
     const repositoryName = environment.GITHUB_REPOSITORY;
     const token = environment.GITHUB_TOKEN;
@@ -253,11 +251,11 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
       throw new Error("Host GitHub environment is incomplete.");
     }
     this.#github = github;
-    this.#labels = labels;
     this.#localGitEnvironment = gitEnvironment(environment);
     this.#networkGitEnvironment = gitEnvironment(environment, token);
     this.#repository = repository;
-    this.#remoteUrl = `https://github.com/${repositoryName}.git`;
+    this.#remoteUrl =
+      remoteUrl ?? `https://github.com/${repositoryName}.git`;
   }
 
   async #assertBranchName(branch: string): Promise<void> {
@@ -338,7 +336,7 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
         "add",
         "--detach",
         path,
-        integrationHead,
+        baseHead,
       ]);
       worktreeAdded = true;
       await executeGit(path, this.#localGitEnvironment, [
@@ -349,7 +347,7 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
         "merge",
         "--no-ff",
         "--no-edit",
-        baseHead,
+        integrationHead,
       ]);
       const mergeHead = await executeGit(path, this.#localGitEnvironment, [
         "rev-parse",
@@ -434,7 +432,4 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
     }
   }
 
-  select() {
-    return activateAndSelectFrontier(this.#github, this.#labels, false);
-  }
 }

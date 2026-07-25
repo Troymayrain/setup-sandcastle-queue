@@ -126,8 +126,7 @@ export async function executeWorkUnit(
   await handle.close();
 
   try {
-    const reviewRole =
-      options.role === "final-review" || options.role === "final-rereview";
+    const reviewRole = options.role === "final-review";
     let result: RunResultLike;
     try {
       result = await boundary.run({

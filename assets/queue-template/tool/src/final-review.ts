@@ -1,11 +1,11 @@
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import type { FrontierResult } from "./frontier.js";
-import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import {
   parseFinalReviewMarker,
   renderFinalReviewMarker,
   type FinalReviewMarker,
-} from "./publication-facts.js";
+} from "./final-review-facts.js";
+import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import type { CommandSpec } from "./processing-run.js";
 import {
   executeWorkUnit,
@@ -59,7 +59,6 @@ export interface FinalReviewBoundary {
     argv: string[],
     environment: NodeJS.ProcessEnv,
   ): Promise<void>;
-  select(): Promise<FrontierResult>;
 }
 
 export interface FirstFinalReviewOptions {
@@ -175,6 +174,7 @@ async function runCommands(
 export async function orchestrateFirstFinalReview(
   options: FirstFinalReviewOptions,
   boundary: FinalReviewBoundary,
+  select: () => Promise<FrontierResult>,
   runWorkUnit: WorkUnitExecutor = executeWorkUnit,
 ): Promise<FirstFinalReviewResult> {
   const runId = options.environment.GITHUB_RUN_ID;
@@ -195,7 +195,7 @@ export async function orchestrateFirstFinalReview(
     };
   }
   const stopped = await leaveFinalizationForFrontier(
-    await boundary.select(),
+    await select(),
     options,
     boundary,
   );
@@ -252,7 +252,7 @@ export async function orchestrateFirstFinalReview(
     return conflict("final-review-head-changed");
   }
   const finalBoundary = await leaveFinalizationForFrontier(
-    await boundary.select(),
+    await select(),
     options,
     boundary,
   );

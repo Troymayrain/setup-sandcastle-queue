@@ -5,12 +5,10 @@ import type {
 } from "./integration-pull-request.js";
 import {
   renderFinalReviewMarker,
-  renderPublicationMarker,
-} from "./publication-facts.js";
-import type {
-  FinalReviewMarker,
-  PublicationMarker,
-} from "./publication-facts.js";
+  type FinalReviewMarker,
+} from "./final-review-facts.js";
+import { renderPublicationMarker } from "./publication-facts.js";
+import type { PublicationMarker } from "./publication-facts.js";
 
 type RetryMode = "none" | "retryable";
 
