@@ -3,7 +3,7 @@ import type {
   DraftPullRequest,
   IntegrationPullRequest,
   PublicationMarker,
-} from "./ticket-run.js";
+} from "./processing-run.js";
 
 export class RestFrontierGitHub implements FrontierGitHub {
   readonly #apiUrl: string;

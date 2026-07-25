@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { withoutExecutionCredentials } from "./credential-environment.js";
 import { RestFrontierGitHub } from "./github-frontier.js";
 import type {
   DraftPullRequest,
   IntegrationPullRequest,
   PublicationMarker,
   TicketHostBoundary,
-} from "./ticket-run.js";
+} from "./processing-run.js";
 
 const executeFile = promisify(execFile);
 
@@ -41,10 +42,7 @@ export class NodeTicketHost implements TicketHostBoundary {
     environment: NodeJS.ProcessEnv,
     token: string,
   ): NodeJS.ProcessEnv {
-    const result = { ...environment };
-    delete result.ANTHROPIC_AUTH_TOKEN;
-    delete result.ANTHROPIC_BASE_URL;
-    delete result.GITHUB_TOKEN;
+    const result = withoutExecutionCredentials(environment);
     result.GIT_CONFIG_COUNT = "1";
     result.GIT_CONFIG_GLOBAL = "/dev/null";
     result.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";

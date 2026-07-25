@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { withoutExecutionCredentials } from "./credential-environment.js";
 import {
   executeWorkUnit,
   type WorkUnitOptions,
@@ -61,7 +62,7 @@ export interface TicketHostBoundary {
   runCommand(argv: string[], environment: NodeJS.ProcessEnv): Promise<void>;
 }
 
-export interface TicketRunOptions {
+export interface ProcessingRunOptions {
   baseBranch: string;
   commands: {
     bootstrap: CommandSpec[];
@@ -79,7 +80,7 @@ export interface TicketRunOptions {
   };
 }
 
-export interface TicketRunResult {
+export interface ProcessingRunResult {
   beforeHead: string;
   completionCommit: string;
   markerCommentId: number;
@@ -97,14 +98,6 @@ function assertObjectId(value: string | null, fact: string): asserts value is st
   }
 }
 
-function projectEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const result = { ...environment };
-  delete result.ANTHROPIC_AUTH_TOKEN;
-  delete result.ANTHROPIC_BASE_URL;
-  delete result.GITHUB_TOKEN;
-  return result;
-}
-
 async function runCommands(
   commands: CommandSpec[],
   boundary: TicketHostBoundary,
@@ -117,7 +110,7 @@ async function runCommands(
 
 async function ticketPrompt(
   basePromptFile: string,
-  ticket: TicketRunOptions["ticket"],
+  ticket: ProcessingRunOptions["ticket"],
 ): Promise<{ path: string; remove(): Promise<void> }> {
   const directory = await mkdtemp(join(tmpdir(), "sandcastle-ticket-prompt-"));
   const path = join(directory, "ticket.md");
@@ -134,7 +127,7 @@ async function ticketPrompt(
 }
 
 async function integrationHead(
-  options: TicketRunOptions,
+  options: ProcessingRunOptions,
   boundary: TicketHostBoundary,
 ): Promise<string> {
   const baseHead = await boundary.remoteHead(options.baseBranch);
@@ -174,7 +167,7 @@ function validateCompletion(
 }
 
 async function ensureDraftPullRequest(
-  options: TicketRunOptions,
+  options: ProcessingRunOptions,
   boundary: TicketHostBoundary,
 ): Promise<DraftPullRequest> {
   const input = {
@@ -201,15 +194,15 @@ async function ensureDraftPullRequest(
   return created;
 }
 
-export async function processTicketRun(
-  options: TicketRunOptions,
+export async function executeProcessingRun(
+  options: ProcessingRunOptions,
   boundary: TicketHostBoundary,
   runWorkUnit: WorkUnitExecutor = executeWorkUnit,
-): Promise<TicketRunResult> {
+): Promise<ProcessingRunResult> {
   const beforeHead = await integrationHead(options, boundary);
   await boundary.checkoutIntegration(options.integrationBranch, beforeHead);
 
-  const commandEnvironment = projectEnvironment(options.environment);
+  const commandEnvironment = withoutExecutionCredentials(options.environment);
   await runCommands(options.commands.bootstrap, boundary, commandEnvironment);
 
   const prompt = await ticketPrompt(options.promptFile, options.ticket);
@@ -267,8 +260,8 @@ export async function processTicketRun(
     options.ticket.number,
     marker,
   );
-  await boundary.closeIssue(options.ticket.number);
   const pullRequest = await ensureDraftPullRequest(options, boundary);
+  await boundary.closeIssue(options.ticket.number);
 
   return {
     beforeHead,

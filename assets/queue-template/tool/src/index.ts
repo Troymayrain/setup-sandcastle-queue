@@ -5,7 +5,10 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestFrontierGitHub } from "./github-frontier.js";
 import { NodeTicketHost } from "./host-boundary.js";
-import { processTicketRun, type CommandSpec } from "./ticket-run.js";
+import {
+  executeProcessingRun,
+  type CommandSpec,
+} from "./processing-run.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
@@ -95,6 +98,16 @@ async function main(): Promise<void> {
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
   if (isProcessingOperation(operation)) {
+    if (operation !== "start") {
+      process.stdout.write(
+        `${JSON.stringify({
+          reason: "continuation-not-yet-enabled",
+          status: "conflict",
+        })}\n`,
+      );
+      process.exitCode = 4;
+      return;
+    }
     const github = new RestFrontierGitHub(process.env);
     const result = await activateAndSelectFrontier(
       github,
@@ -109,7 +122,7 @@ async function main(): Promise<void> {
       process.exitCode = result.status === "conflict" ? 4 : 0;
       return;
     }
-    const published = await processTicketRun(
+    const published = await executeProcessingRun(
       {
         baseBranch: config.repository.baseBranch,
         commands: config.commands,

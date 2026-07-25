@@ -24,6 +24,14 @@ _Avoid_: Queue Template, Setup runtime
 当前 GitHub Actions run 达到票数或时间边界后自动触发的后继 run；它从远端集成分支和 Issues 状态继续同一条队列执行链。
 _Avoid_: 长驻 runner, 人工续跑, Batch checkpoint
 
+**Processing Run**:
+只处理一张 Ticket 的有界 GitHub Actions run；首次 Processing Run 由维护者人工触发，后续工作通过 Continuation Run 接力。
+_Avoid_: Ticket Run, 多 Ticket 单次 run
+
 **Integration Branch**:
 首次队列 workflow 从所选 base branch 创建、并由全部 Continuation Runs 共同推进的稳定远端分支。
 _Avoid_: Sandcastle 临时分支, runner worktree
+
+**Ticket Publication Marker**:
+在 completion commit 已 push 并通过远端 HEAD 校验后，为一张 Ticket 创建且不再修改的发布事实；Issue 只有在该 marker 可见后才能关闭。
+_Avoid_: mutable checkpoint, Batch state

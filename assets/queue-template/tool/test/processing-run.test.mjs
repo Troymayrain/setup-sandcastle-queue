@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { processTicketRun } from "../dist/ticket-run.js";
+import { executeProcessingRun } from "../dist/processing-run.js";
 
 const baseHead = "1".repeat(40);
 const completionCommit = "2".repeat(40);
@@ -105,11 +105,11 @@ function successfulWorkUnit(events, overrides = {}) {
   };
 }
 
-test("one bounded Ticket run creates the Integration Branch and publishes in the safe order", async () => {
+test("one bounded Processing Run creates the Integration Branch and publishes in the safe order", async () => {
   const root = mkdtempSync(join(tmpdir(), "queue-ticket-run-"));
   const events = [];
 
-  const result = await processTicketRun(
+  const result = await executeProcessingRun(
     options(root),
     successfulBoundary(events),
     successfulWorkUnit(events),
@@ -134,8 +134,8 @@ test("one bounded Ticket run creates the Integration Branch and publishes in the
   assert.ok(names.lastIndexOf("command") < names.indexOf("parents"));
   assert.ok(names.indexOf("push") < names.lastIndexOf("remoteHead"));
   assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("marker"));
-  assert.ok(names.indexOf("marker") < names.indexOf("close"));
-  assert.ok(names.indexOf("close") < names.indexOf("createDraftPr"));
+  assert.ok(names.indexOf("marker") < names.indexOf("createDraftPr"));
+  assert.ok(names.indexOf("createDraftPr") < names.indexOf("close"));
 
   const sandcastle = events.find(([name]) => name === "sandcastle")[1];
   assert.equal(sandcastle.role, "ticket");
@@ -202,7 +202,7 @@ test("invalid completion proof or project-command failure never reaches publicat
     const events = [];
     const boundary = successfulBoundary(events, scenario.boundary);
     await assert.rejects(
-      processTicketRun(options(root), boundary, scenario.workUnit),
+      executeProcessingRun(options(root), boundary, scenario.workUnit),
       undefined,
       scenario.name,
     );
@@ -237,7 +237,7 @@ test("an existing unique open draft Integration PR is reused", async () => {
     baseHead,
   );
 
-  const result = await processTicketRun(
+  const result = await executeProcessingRun(
     options(root),
     boundary,
     successfulWorkUnit(events),
@@ -246,4 +246,23 @@ test("an existing unique open draft Integration PR is reused", async () => {
   assert.deepEqual(result.pullRequest, existing);
   assert.equal(events.some(([name]) => name === "createBranch"), false);
   assert.equal(events.some(([name]) => name === "createDraftPr"), false);
+});
+
+test("a draft PR failure leaves the Ticket open after its immutable marker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "queue-ticket-pr-failure-"));
+  const events = [];
+  const boundary = successfulBoundary(events, {
+    async createDraftPullRequest(input) {
+      events.push(["createDraftPr", input]);
+      throw new Error("pull request unavailable");
+    },
+  });
+
+  await assert.rejects(
+    executeProcessingRun(options(root), boundary, successfulWorkUnit(events)),
+    /pull request unavailable/u,
+  );
+
+  assert.equal(events.some(([name]) => name === "marker"), true);
+  assert.equal(events.some(([name]) => name === "close"), false);
 });
