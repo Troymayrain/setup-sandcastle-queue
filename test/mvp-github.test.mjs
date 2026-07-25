@@ -79,7 +79,7 @@ function runAsync(root, args, input, environment) {
   });
 }
 
-async function fakeGitHub() {
+async function fakeGitHub({ createSecretAfterPreview = false } = {}) {
   const requests = [];
   const state = {
     labels: [{ name: "READY-FOR-AGENT" }],
@@ -107,6 +107,7 @@ async function fakeGitHub() {
       request.url?.endsWith("/actions/variables/ANTHROPIC_BASE_URL")
     ) {
       send(state.variable ? 200 : 404, state.variable ? { name: "ANTHROPIC_BASE_URL" } : undefined);
+      if (createSecretAfterPreview) state.secret = true;
     } else if (
       request.method === "GET" &&
       request.url?.endsWith("/actions/secrets/public-key")
@@ -128,10 +129,9 @@ async function fakeGitHub() {
       state.variable = true;
       send(201, {});
     } else if (
-      request.method === "PATCH" &&
-      request.url?.endsWith("/actions/variables/ANTHROPIC_BASE_URL")
+      request.method === "PATCH"
     ) {
-      send(204);
+      send(500, { message: "variables must not be rewritten" });
     } else {
       send(500, { message: "unexpected request" });
     }
@@ -227,7 +227,7 @@ test("init separately confirms and configures only the four allowed GitHub resou
   }
 });
 
-test("tracked Queue-local credentials block every GitHub write without removing local assets", async () => {
+test("tracked Queue-local credentials block every GitHub write without removing Project-controlled Assets", async () => {
   const fixture = repository();
   const github = await fakeGitHub();
   const local = await runAsync(
@@ -259,6 +259,34 @@ test("tracked Queue-local credentials block every GitHub write without removing 
     assert.match(result.stdout, /TRACKED_CREDENTIAL_FILE/u);
     assert.equal(result.stdout.includes("tracked-secret"), false);
     assert.equal(github.requests.every(({ method }) => method === "GET"), true);
+  } finally {
+    await github.close();
+  }
+});
+
+test("a secret created during confirmation is preserved without overwrite confirmation", async () => {
+  const fixture = repository();
+  const github = await fakeGitHub({ createSecretAfterPreview: true });
+  const environment = {
+    ...process.env,
+    ANTHROPIC_AUTH_TOKEN: "must-not-overwrite",
+    ANTHROPIC_BASE_URL: "https://provider.example",
+    GITHUB_API_URL: github.apiUrl,
+    GITHUB_REPOSITORY: "acme/widget",
+    GITHUB_TOKEN: "github-token",
+  };
+  try {
+    const result = await runAsync(
+      fixture.root,
+      ["init", "--config", fixture.configPath],
+      "yes\nyes\n",
+      environment,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      github.requests.some(({ method }) => method === "PUT"),
+      false,
+    );
   } finally {
     await github.close();
   }

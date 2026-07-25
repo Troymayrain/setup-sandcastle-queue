@@ -18,7 +18,7 @@ interface Credentials {
 }
 
 interface ResourcePlan {
-  action: "create" | "preserve" | "reuse" | "upsert";
+  action: "create" | "preserve" | "reuse";
   kind: "label" | "secret" | "variable";
   name: string;
 }
@@ -167,6 +167,13 @@ async function assertCredentialFilesUntracked(root: string): Promise<void> {
       }
     } catch (error) {
       if (error instanceof CliError) throw error;
+      if ((error as { code?: number }).code !== 1) {
+        throw new CliError(
+          3,
+          "GIT_INDEX_UNREADABLE",
+          "Unable to prove Provider credential files are untracked.",
+        );
+      }
     }
   }
 }
@@ -224,7 +231,7 @@ export async function previewGitHubResources(
     name: secretName,
   });
   resources.push({
-    action: variable.status === 200 ? "upsert" : "create",
+    action: variable.status === 200 ? "preserve" : "create",
     kind: "variable",
     name: variableName,
   });
@@ -271,7 +278,11 @@ export async function applyGitHubResources(
   const client = new GitHubClient(environment);
   const results: GitHubApplyResult["resources"] = [];
   for (const resource of preview.resources) {
-    if (resource.action === "reuse" || (resource.action === "preserve" && !overwriteSecret)) {
+    if (
+      resource.action === "reuse" ||
+      (resource.action === "preserve" &&
+        (resource.kind !== "secret" || !overwriteSecret))
+    ) {
       results.push({ ...resource, status: "ok" });
       continue;
     }
@@ -284,25 +295,34 @@ export async function applyGitHubResources(
           [201],
         );
       } else if (resource.kind === "secret") {
+        if (resource.action === "create" && !overwriteSecret) {
+          const freshSecret = await client.request(
+            "GET",
+            `/repos/${client.repository}/actions/secrets/${secretName}`,
+            undefined,
+            [200, 404],
+          );
+          if (freshSecret.status === 200) {
+            results.push({
+              ...resource,
+              action: "preserve",
+              status: "ok",
+            });
+            continue;
+          }
+        }
         await client.request(
           "PUT",
           `/repos/${client.repository}/actions/secrets/${secretName}`,
           await encryptedSecret(client, credentials),
           [201, 204],
         );
-      } else if (resource.action === "create") {
+      } else {
         await client.request(
           "POST",
           `/repos/${client.repository}/actions/variables`,
           { name: variableName, value: credentials.baseUrl },
           [201],
-        );
-      } else {
-        await client.request(
-          "PATCH",
-          `/repos/${client.repository}/actions/variables/${variableName}`,
-          { name: variableName, value: credentials.baseUrl },
-          [204],
         );
       }
       results.push({ ...resource, status: "ok" });

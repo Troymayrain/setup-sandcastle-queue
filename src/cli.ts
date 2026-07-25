@@ -95,7 +95,9 @@ async function main(): Promise<void> {
         "yes",
       ))
     ) {
-      process.stdout.write("GitHub configuration skipped; local assets were preserved.\n");
+      process.stdout.write(
+        "GitHub configuration skipped; Project-controlled Assets were preserved.\n",
+      );
       return;
     }
     const overwriteSecret =
