@@ -4,12 +4,23 @@ import { join, resolve } from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestFrontierGitHub } from "./github-frontier.js";
+import { NodeTicketHost } from "./host-boundary.js";
+import { processTicketRun, type CommandSpec } from "./ticket-run.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
+  commands: {
+    bootstrap: CommandSpec[];
+    test: CommandSpec[];
+    verification: CommandSpec[];
+  };
   queue: {
     ownershipLabel: string;
     readyLabel: string;
+  };
+  repository: {
+    baseBranch: string;
+    integrationBranch: string;
   };
   models: {
     finalFix: string;
@@ -84,16 +95,36 @@ async function main(): Promise<void> {
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
   if (isProcessingOperation(operation)) {
+    const github = new RestFrontierGitHub(process.env);
     const result = await activateAndSelectFrontier(
-      new RestFrontierGitHub(process.env),
+      github,
       {
         ownership: config.queue.ownershipLabel,
         ready: config.queue.readyLabel,
       },
       operation === "start",
     );
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    process.exitCode = result.status === "conflict" ? 4 : 0;
+    if (result.status !== "ready") {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      process.exitCode = result.status === "conflict" ? 4 : 0;
+      return;
+    }
+    const published = await processTicketRun(
+      {
+        baseBranch: config.repository.baseBranch,
+        commands: config.commands,
+        environment: process.env,
+        integrationBranch: config.repository.integrationBranch,
+        model: config.models.ticket,
+        promptFile: join(repository, ".sandcastle", "prompts", "ticket.md"),
+        repository,
+        ticket: { body: result.body, number: result.ticket },
+      },
+      new NodeTicketHost(repository, process.env, github),
+    );
+    process.stdout.write(
+      `${JSON.stringify({ activated: result.activated, ...published })}\n`,
+    );
     return;
   }
   const role = roleFor(operation);
