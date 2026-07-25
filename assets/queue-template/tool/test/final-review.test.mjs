@@ -50,6 +50,9 @@ function fixture({
         baseHead,
         integrationHead,
         path: "/temporary/merge",
+        async includes() {
+          return true;
+        },
         async remove() {
           events.push(["remove"]);
         },

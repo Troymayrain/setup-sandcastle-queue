@@ -32,7 +32,11 @@ function options() {
   };
 }
 
-function fixture({ sessionId = "rereview-session-1", verdict = "pass" } = {}) {
+function fixture({
+  currentHead = fixedHead,
+  sessionId = "rereview-session-1",
+  verdict = "pass",
+} = {}) {
   const events = [];
   const comments = [{
     body: renderFinalFixMarker({
@@ -56,8 +60,11 @@ function fixture({ sessionId = "rereview-session-1", verdict = "pass" } = {}) {
       events.push(["merge", input]);
       return {
         baseHead,
-        integrationHead: fixedHead,
+        integrationHead: currentHead,
         path: "/temporary/rereview",
+        async includes() {
+          return true;
+        },
         async remove() {
           events.push(["remove"]);
         },
@@ -85,7 +92,7 @@ function fixture({ sessionId = "rereview-session-1", verdict = "pass" } = {}) {
       events.push(["ready", nodeId]);
     },
     async remoteHead(branch) {
-      return branch === "main" ? baseHead : fixedHead;
+      return branch === "main" ? baseHead : currentHead;
     },
     async runCommand(path, argv, environment) {
       events.push(["command", path, argv, environment]);
@@ -146,6 +153,27 @@ test("failed rereview records needs-fix and never authorizes a second automatic 
     state.events.some(([name]) => /fix/iu.test(name)),
     false,
   );
+});
+
+test("Rereview resumes after late Ticket commits that descend from the Final Fix", async () => {
+  const laterHead = "4".repeat(40);
+  const state = fixture({ currentHead: laterHead });
+  const resumed = options();
+  resumed.expectedHead = laterHead;
+  resumed.predecessorRunId = "9005";
+
+  const result = await orchestrateFinalRereview(
+    resumed,
+    state.boundary,
+    state.select,
+    state.runWorkUnit,
+  );
+
+  assert.equal(result.status, "ready-for-human-review");
+  assert.equal(result.integrationHead, laterHead);
+  const marker = state.events.find(([name]) => name === "marker")[2];
+  assert.equal(marker.integrationHead, laterHead);
+  assert.equal(marker.fixRunId, "9003");
 });
 
 test("fixing session cannot approve itself and a late Ticket suppresses rereview marker", async () => {

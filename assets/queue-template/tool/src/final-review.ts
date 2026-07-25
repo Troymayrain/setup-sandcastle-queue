@@ -1,11 +1,15 @@
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import type { FrontierResult } from "./frontier.js";
 import {
-  parseFinalFixMarker,
-  parseFinalReviewMarker,
   renderFinalReviewMarker,
   type FinalReviewMarker,
 } from "./final-review-facts.js";
+import {
+  leaveFinalization,
+  runCommandGroups,
+  scanFinalizationMarkers,
+  type FinalizationComment,
+} from "./finalization.js";
 import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import type { CommandSpec } from "./processing-run.js";
 import {
@@ -23,11 +27,6 @@ interface TemporaryMerge {
   path: string;
   remove(): Promise<void>;
   unchanged(): Promise<boolean>;
-}
-
-interface FinalReviewComment {
-  body: string;
-  id: number;
 }
 
 export interface FinalReviewBoundary {
@@ -60,7 +59,7 @@ export interface FinalReviewBoundary {
     base: string;
     head: string;
   }): Promise<IntegrationPullRequest[]>;
-  listIssueComments(issue: number): Promise<FinalReviewComment[]>;
+  listIssueComments(issue: number): Promise<FinalizationComment[]>;
   markPullRequestReady(nodeId: string): Promise<void>;
   remoteHead(branch: string): Promise<string | null>;
   runCommand(
@@ -113,55 +112,16 @@ function conflict(reason: string): FirstFinalReviewResult {
   return { reason, status: "conflict" };
 }
 
-async function leaveFinalizationForFrontier(
-  frontier: FrontierResult,
-  options: FirstFinalReviewOptions,
-  boundary: FinalReviewBoundary,
-): Promise<FirstFinalReviewResult | null> {
-  if (frontier.status === "conflict") return frontier;
-  if (frontier.status === "ready") {
-    await boundary.dispatchContinuation({
-      inputs: {
-        expected_head: options.expectedHead,
-        operation: "continue",
-        predecessor_run_id: options.environment.GITHUB_RUN_ID!,
-      },
-      ref: options.baseBranch,
-    });
-    return { status: "processing", ticket: frontier.ticket };
-  }
-  return frontier.reason === "empty"
-    ? null
-    : { reason: frontier.reason, status: "waiting" };
-}
-
 function inspectFinalReviewMarker(
-  comments: FinalReviewComment[],
+  comments: FinalizationComment[],
   expected: FinalReviewMarker,
 ):
   | { status: "conflict" }
   | { status: "none" }
   | { id: number; status: "exact" } {
-  if (
-    comments.some(
-      ({ body, id }) =>
-        typeof body !== "string" || !Number.isSafeInteger(id) || id <= 0,
-    ) ||
-    new Set(comments.map(({ id }) => id)).size !== comments.length
-  ) {
-    return { status: "conflict" };
-  }
-  let markers: Array<{ id: number; marker: FinalReviewMarker }>;
-  try {
-    markers = comments
-      .map(({ body, id }) => ({ id, marker: parseFinalReviewMarker(body) }))
-      .filter(
-        (value): value is { id: number; marker: FinalReviewMarker } =>
-          value.marker !== null,
-      );
-  } catch {
-    return { status: "conflict" };
-  }
+  const scanned = scanFinalizationMarkers(comments);
+  if (!scanned) return { status: "conflict" };
+  const markers = scanned.reviews;
   if (markers.length === 0) return { status: "none" };
   const exact = markers.filter(
     ({ marker }) =>
@@ -178,19 +138,6 @@ function inspectFinalReviewMarker(
   )
     ? { status: "conflict" }
     : { status: "none" };
-}
-
-async function runCommands(
-  groups: CommandSpec[][],
-  path: string,
-  boundary: FinalReviewBoundary,
-  environment: NodeJS.ProcessEnv,
-): Promise<void> {
-  for (const commands of groups) {
-    for (const { argv } of commands) {
-      await boundary.runCommand(path, [...argv], environment);
-    }
-  }
 }
 
 export async function orchestrateFirstFinalReview(
@@ -216,10 +163,14 @@ export async function orchestrateFirstFinalReview(
       status: "stale-final-review",
     };
   }
-  const stopped = await leaveFinalizationForFrontier(
+  const stopped = await leaveFinalization(
     await select(),
-    options,
-    boundary,
+    {
+      baseBranch: options.baseBranch,
+      expectedHead: options.expectedHead,
+      runId: runId!,
+    },
+    (payload) => boundary.dispatchContinuation(payload),
   );
   if (stopped) return stopped;
 
@@ -231,15 +182,15 @@ export async function orchestrateFirstFinalReview(
   let review: WorkUnitResult;
   let temporaryUnchanged = false;
   try {
-    await runCommands(
+    const commandEnvironment = withoutExecutionCredentials(options.environment);
+    await runCommandGroups(
       [
         options.commands.bootstrap,
         options.commands.test,
         options.commands.verification,
       ],
-      temporary.path,
-      boundary,
-      withoutExecutionCredentials(options.environment),
+      (argv) =>
+        boundary.runCommand(temporary.path, argv, commandEnvironment),
     );
     review = await runWorkUnit({
       cwd: temporary.path,
@@ -273,10 +224,14 @@ export async function orchestrateFirstFinalReview(
   ) {
     return conflict("final-review-head-changed");
   }
-  const finalBoundary = await leaveFinalizationForFrontier(
+  const finalBoundary = await leaveFinalization(
     await select(),
-    options,
-    boundary,
+    {
+      baseBranch: options.baseBranch,
+      expectedHead: options.expectedHead,
+      runId: runId!,
+    },
+    (payload) => boundary.dispatchContinuation(payload),
   );
   if (finalBoundary) return finalBoundary;
 
@@ -317,13 +272,11 @@ export async function orchestrateFirstFinalReview(
   if (review.verdict === "pass") {
     await boundary.markPullRequestReady(pullRequest.nodeId);
   } else {
-    try {
-      priorFix = visibleComments.some(
-        ({ body }) => parseFinalFixMarker(body) !== null,
-      );
-    } catch {
+    const history = scanFinalizationMarkers(visibleComments);
+    if (!history) {
       return conflict("final-fix-history-unprovable");
     }
+    priorFix = history.fixes.length > 0;
     if (!priorFix) {
       await boundary.dispatchFinalFix({
         inputs: {

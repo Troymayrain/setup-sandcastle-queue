@@ -69,7 +69,7 @@ async function executeGit(
   }
 }
 
-export class NodeTicketHost implements TicketHostBoundary, FinalFixBoundary {
+export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary {
   readonly #github: RestGitHubHost;
   readonly #localGitEnvironment: NodeJS.ProcessEnv;
   readonly #networkGitEnvironment: NodeJS.ProcessEnv;
@@ -330,6 +330,7 @@ export class NodeFinalReviewHost
     baseHead: string;
     integrationHead: string;
     path: string;
+    includes(commit: string): Promise<boolean>;
     remove(): Promise<void>;
     unchanged(): Promise<boolean>;
   }> {
@@ -408,6 +409,24 @@ export class NodeFinalReviewHost
         baseHead,
         integrationHead,
         path,
+        includes: async (commit) => {
+          if (!/^[0-9a-f]{40}$/u.test(commit)) return false;
+          try {
+            await executeFile(
+              "git",
+              ["merge-base", "--is-ancestor", commit, integrationHead],
+              {
+                cwd: path,
+                encoding: "utf8",
+                env: this.#localGitEnvironment,
+                maxBuffer: 16 * 1024 * 1024,
+              },
+            );
+            return true;
+          } catch {
+            return false;
+          }
+        },
         remove,
         unchanged: async () => {
           const [head, status] = await Promise.all([

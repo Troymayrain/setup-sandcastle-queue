@@ -12,11 +12,12 @@ import { runWithTicketDeadline } from "./deadline.js";
 import { orchestrateFinalFix } from "./final-fix.js";
 import { orchestrateFinalRereview } from "./final-rereview.js";
 import { orchestrateFirstFinalReview } from "./final-review.js";
+import { nextFinalOperation } from "./finalization.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
 import {
   NodeFinalReviewHost,
-  NodeTicketHost,
+  NodeIntegrationHost,
 } from "./host-boundary.js";
 import {
   executeProcessingRun,
@@ -155,7 +156,7 @@ async function main(): Promise<void> {
         ),
         repository,
       },
-      new NodeTicketHost(repository, process.env, github),
+      new NodeIntegrationHost(repository, process.env, github),
       () =>
         activateAndSelectFrontier(
           github,
@@ -240,6 +241,14 @@ async function main(): Promise<void> {
       runInvocation,
       github,
       {
+        finalize: () =>
+          nextFinalOperation(
+            {
+              baseBranch: config.repository.baseBranch,
+              integrationBranch: config.repository.integrationBranch,
+            },
+            github,
+          ),
         process: (ticket) =>
           runWithTicketDeadline(
             {
@@ -266,7 +275,7 @@ async function main(): Promise<void> {
                   repository,
                   ticket,
                 },
-                new NodeTicketHost(repository, process.env, github),
+                new NodeIntegrationHost(repository, process.env, github),
               ),
             ({ beforeHead, ticket: expectedTicket }) =>
               inspectPublicationAtDeadline(

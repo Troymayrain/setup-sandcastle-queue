@@ -1,11 +1,14 @@
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import {
-  parseFinalFixMarker,
-  parseFinalReviewMarker,
   renderFinalFixMarker,
   type FinalFixMarker,
-  type FinalReviewMarker,
 } from "./final-review-facts.js";
+import {
+  leaveFinalization,
+  runCommandGroups,
+  scanFinalizationMarkers,
+  type FinalizationComment,
+} from "./finalization.js";
 import type { FrontierResult } from "./frontier.js";
 import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import type { CommandSpec } from "./processing-run.js";
@@ -17,11 +20,6 @@ import {
 
 const objectIdPattern = /^[0-9a-f]{40}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
-
-interface FinalizationComment {
-  body: string;
-  id: number;
-}
 
 export interface FinalFixBoundary {
   checkoutIntegration(branch: string, head: string): Promise<void>;
@@ -94,72 +92,6 @@ function conflict(reason: string): FinalFixResult {
   return { reason, status: "conflict" };
 }
 
-function finalizationMarkers(comments: FinalizationComment[]): {
-  fixes: Array<{ id: number; marker: FinalFixMarker }>;
-  reviews: Array<{ id: number; marker: FinalReviewMarker }>;
-} | null {
-  if (
-    comments.some(
-      ({ body, id }) =>
-        typeof body !== "string" || !Number.isSafeInteger(id) || id <= 0,
-    ) ||
-    new Set(comments.map(({ id }) => id)).size !== comments.length
-  ) {
-    return null;
-  }
-  try {
-    return {
-      fixes: comments
-        .map(({ body, id }) => ({ id, marker: parseFinalFixMarker(body) }))
-        .filter(
-          (value): value is { id: number; marker: FinalFixMarker } =>
-            value.marker !== null,
-        ),
-      reviews: comments
-        .map(({ body, id }) => ({ id, marker: parseFinalReviewMarker(body) }))
-        .filter(
-          (value): value is { id: number; marker: FinalReviewMarker } =>
-            value.marker !== null,
-        ),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function runCommands(
-  commands: CommandSpec[],
-  boundary: FinalFixBoundary,
-  environment: NodeJS.ProcessEnv,
-): Promise<void> {
-  for (const { argv } of commands) {
-    await boundary.runCommand([...argv], environment);
-  }
-}
-
-async function leaveFinalization(
-  frontier: FrontierResult,
-  options: FinalFixOptions,
-  boundary: FinalFixBoundary,
-  expectedHead: string,
-): Promise<FinalFixResult | null> {
-  if (frontier.status === "conflict") return frontier;
-  if (frontier.status === "ready") {
-    await boundary.dispatchContinuation({
-      inputs: {
-        expected_head: expectedHead,
-        operation: "continue",
-        predecessor_run_id: options.environment.GITHUB_RUN_ID!,
-      },
-      ref: options.baseBranch,
-    });
-    return { status: "processing", ticket: frontier.ticket };
-  }
-  return frontier.reason === "empty"
-    ? null
-    : { reason: frontier.reason, status: "waiting" };
-}
-
 export async function orchestrateFinalFix(
   options: FinalFixOptions,
   boundary: FinalFixBoundary,
@@ -184,9 +116,12 @@ export async function orchestrateFinalFix(
   }
   const stopped = await leaveFinalization(
     await select(),
-    options,
-    boundary,
-    options.expectedHead,
+    {
+      baseBranch: options.baseBranch,
+      expectedHead: options.expectedHead,
+      runId: runId!,
+    },
+    (payload) => boundary.dispatchContinuation(payload),
   );
   if (stopped) return stopped;
 
@@ -203,7 +138,7 @@ export async function orchestrateFinalFix(
   ) {
     return conflict("unique-draft-integration-pull-request-required");
   }
-  const markers = finalizationMarkers(
+  const markers = scanFinalizationMarkers(
     await boundary.listIssueComments(pullRequest.number),
   );
   const authorization = markers?.reviews.filter(
@@ -221,10 +156,9 @@ export async function orchestrateFinalFix(
     options.expectedHead,
   );
   const commandEnvironment = withoutExecutionCredentials(options.environment);
-  await runCommands(
-    options.commands.bootstrap,
-    boundary,
-    commandEnvironment,
+  await runCommandGroups(
+    [options.commands.bootstrap],
+    (argv) => boundary.runCommand(argv, commandEnvironment),
   );
   const workUnit = await runWorkUnit({
     cwd: options.repository,
@@ -233,11 +167,9 @@ export async function orchestrateFinalFix(
     promptFile: options.promptFile,
     role: "final-fix",
   });
-  await runCommands(options.commands.test, boundary, commandEnvironment);
-  await runCommands(
-    options.commands.verification,
-    boundary,
-    commandEnvironment,
+  await runCommandGroups(
+    [options.commands.test, options.commands.verification],
+    (argv) => boundary.runCommand(argv, commandEnvironment),
   );
 
   const afterHead = await boundary.localHead();
@@ -284,7 +216,7 @@ export async function orchestrateFinalFix(
     type: "sandcastle-final-fix",
   };
   await boundary.createFinalFixMarker(pullRequest.number, marker);
-  const visibleMarkers = finalizationMarkers(
+  const visibleMarkers = scanFinalizationMarkers(
     await boundary.listIssueComments(pullRequest.number),
   );
   const visible = visibleMarkers?.fixes.filter(
@@ -300,9 +232,12 @@ export async function orchestrateFinalFix(
   }
   const finalBoundary = await leaveFinalization(
     await select(),
-    options,
-    boundary,
-    afterHead,
+    {
+      baseBranch: options.baseBranch,
+      expectedHead: afterHead,
+      runId: runId!,
+    },
+    (payload) => boundary.dispatchContinuation(payload),
   );
   if (finalBoundary) return finalBoundary;
   await boundary.dispatchFinalRereview({
