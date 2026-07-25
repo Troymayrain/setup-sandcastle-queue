@@ -1,0 +1,24 @@
+{
+  "name": "sandcastle-queue-template-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0",
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "@standard-schema/spec": "1.1.0",
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  }
+}
