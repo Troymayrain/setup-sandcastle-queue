@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { executeWorkUnit } from "../dist/work-unit.js";
+import {
+  executeWorkUnit,
+  parseRawAgentStream,
+} from "../dist/work-unit.js";
 
 test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "queue-tool-work-unit-"));
@@ -64,6 +67,11 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     assert.deepEqual(options.sandbox.options.env, {});
   }
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
+  assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {
+    jsonLines: 1,
+    lineCount: 2,
+    textLines: 1,
+  });
 });
 
 test("raw stream is deleted when Sandcastle fails", async () => {
@@ -76,6 +84,7 @@ test("raw stream is deleted when Sandcastle fails", async () => {
     docker: () => ({}),
     async run(options) {
       rawPath = options.logging.path;
+      writeFileSync(rawPath, '{"type":"error"}\n');
       throw new Error("agent failed");
     },
   };

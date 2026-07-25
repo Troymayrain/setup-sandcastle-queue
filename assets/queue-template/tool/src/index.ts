@@ -1,34 +1,70 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
+
+interface ToolConfig {
+  models: {
+    finalFix: string;
+    finalReview: string;
+    ticket: string;
+  };
+}
+
+type Operation =
+  | "start"
+  | "continue"
+  | "resume"
+  | "final-review"
+  | "final-fix"
+  | "final-rereview";
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+function roleFor(operation: Operation): WorkUnitRole {
+  if (operation === "start" || operation === "continue" || operation === "resume") {
+    return "ticket";
+  }
+  return operation;
+}
+
+function modelFor(role: WorkUnitRole, config: ToolConfig): string {
+  if (role === "ticket") return config.models.ticket;
+  if (role === "final-fix") return config.models.finalFix;
+  return config.models.finalReview;
+}
+
 async function main(): Promise<void> {
-  const role = option("--role") as WorkUnitRole | undefined;
-  const model = option("--model");
-  const promptFile = option("--prompt-file");
+  const operation = option("--operation") as Operation | undefined;
   if (
-    !role ||
-    !["ticket", "final-review", "final-fix", "final-rereview"].includes(role) ||
-    !model ||
-    !promptFile
+    !operation ||
+    ![
+      "start",
+      "continue",
+      "resume",
+      "final-review",
+      "final-fix",
+      "final-rereview",
+    ].includes(operation)
   ) {
-    process.stderr.write(
-      "Usage: queue-tool --role <role> --model <model> --prompt-file <path>\n",
-    );
+    process.stderr.write("Usage: queue-tool --operation <operation>\n");
     process.exitCode = 2;
     return;
   }
-  await readFile(resolve(promptFile), "utf8");
+  const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
+  const config = JSON.parse(
+    await readFile(join(repository, ".sandcastle", "config.json"), "utf8"),
+  ) as ToolConfig;
+  const role = roleFor(operation);
+  const promptRole = role === "final-rereview" ? "final-review" : role;
+  const promptFile = join(repository, ".sandcastle", "prompts", `${promptRole}.md`);
   const result = await executeWorkUnit({
-    cwd: process.cwd(),
+    cwd: repository,
     environment: process.env,
-    model,
+    model: modelFor(role, config),
     promptFile,
     role,
   });

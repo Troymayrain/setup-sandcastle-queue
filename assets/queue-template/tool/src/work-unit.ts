@@ -47,6 +47,13 @@ export interface WorkUnitResult {
   role: WorkUnitRole;
   sessionId: string;
   status: "complete";
+  streamSummary: RawStreamSummary;
+}
+
+export interface RawStreamSummary {
+  jsonLines: number;
+  lineCount: number;
+  textLines: number;
 }
 
 const realBoundary: SandcastleBoundary = {
@@ -81,6 +88,24 @@ function sessionId(result: RunResultLike): string {
   return ids[0]!;
 }
 
+export function parseRawAgentStream(source: string): RawStreamSummary {
+  const lines = source.split(/\r?\n/u).filter((line) => line.length > 0);
+  let jsonLines = 0;
+  for (const line of lines) {
+    try {
+      JSON.parse(line);
+      jsonLines += 1;
+    } catch {
+      // Sandcastle file logging can interleave typed text with raw JSON lines.
+    }
+  }
+  return {
+    jsonLines,
+    lineCount: lines.length,
+    textLines: lines.length - jsonLines,
+  };
+}
+
 export async function executeWorkUnit(
   options: WorkUnitOptions,
   boundary: SandcastleBoundary = realBoundary,
@@ -91,7 +116,9 @@ export async function executeWorkUnit(
   await handle.close();
 
   try {
-    const result = await boundary.run({
+    let result: RunResultLike;
+    try {
+      result = await boundary.run({
       agent: boundary.claudeCode(options.model, {
         captureSessions: true,
         env: providerEnvironment(options.environment),
@@ -107,15 +134,22 @@ export async function executeWorkUnit(
         imageName: "sandcastle-queue-template:local",
       }),
       signal: options.signal,
-    });
+      });
+    } catch (error) {
+      parseRawAgentStream(await readFile(rawStreamPath, "utf8"));
+      throw error;
+    }
 
-    await readFile(rawStreamPath, "utf8");
+    const streamSummary = parseRawAgentStream(
+      await readFile(rawStreamPath, "utf8"),
+    );
     return {
       branch: result.branch,
       commits: result.commits.map(({ sha }) => sha),
       role: options.role,
       sessionId: sessionId(result),
       status: "complete",
+      streamSummary,
     };
   } finally {
     await rm(temporary, { force: true, recursive: true });

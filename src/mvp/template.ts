@@ -77,10 +77,15 @@ jobs:
           persist-credentials: false
       - name: Install Queue Template tool
         working-directory: .sandcastle/tool
-        run: npm ci
+        run: npm ci && npm run build
+      - name: Build the Agent sandbox image
+        working-directory: .sandcastle/tool
+        run: docker build --tag sandcastle-queue-template:local .
       - name: Run one bounded work unit
         working-directory: .sandcastle/tool
         env:
+          ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
         run: npm start -- --operation "\${{ inputs.operation }}" --expected-head "\${{ inputs.expected_head }}" --predecessor-run-id "\${{ inputs.predecessor_run_id }}"
 `;
