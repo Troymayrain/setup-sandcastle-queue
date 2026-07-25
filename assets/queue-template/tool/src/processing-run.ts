@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
+import type {
+  CompletionMetadata,
+  PublicationMarker,
+} from "./publication-facts.js";
 import {
   executeWorkUnit,
   type WorkUnitOptions,
@@ -13,17 +17,6 @@ const objectIdPattern = /^[0-9a-f]{40}$/u;
 
 export interface CommandSpec {
   argv: string[];
-}
-
-export interface PublicationMarker {
-  afterHead: string;
-  beforeHead: string;
-  integrationBranch: string;
-  issue: number;
-  runId: string;
-  schemaVersion: 1;
-  sessionId: string;
-  type: "sandcastle-ticket-publication";
 }
 
 export interface IntegrationPullRequest {
@@ -38,6 +31,7 @@ export interface DraftPullRequest extends IntegrationPullRequest {
 }
 
 export interface TicketHostBoundary {
+  annotateCompletionCommit(metadata: CompletionMetadata): Promise<string>;
   checkoutIntegration(branch: string, head: string): Promise<void>;
   closeIssue(issue: number): Promise<void>;
   commitParents(commit: string): Promise<string[]>;
@@ -144,7 +138,7 @@ async function integrationHead(
   return head;
 }
 
-function validateCompletion(
+function validateAgentCompletion(
   beforeHead: string,
   afterHead: string,
   parents: string[],
@@ -227,7 +221,31 @@ export async function executeProcessingRun(
     boundary.commitParents(afterHead),
     boundary.isClean(),
   ]);
-  validateCompletion(beforeHead, afterHead, parents, workUnit, clean);
+  validateAgentCompletion(beforeHead, afterHead, parents, workUnit, clean);
+
+  const runId = options.environment.GITHUB_RUN_ID;
+  if (!runId) {
+    throw new Error("GITHUB_RUN_ID is required for immutable publication metadata.");
+  }
+  const completionCommit = await boundary.annotateCompletionCommit({
+    beforeHead,
+    issue: options.ticket.number,
+    runId,
+    sessionId: workUnit.sessionId,
+  });
+  const [completionParents, completionClean] = await Promise.all([
+    boundary.commitParents(completionCommit),
+    boundary.isClean(),
+  ]);
+  if (
+    !objectIdPattern.test(completionCommit) ||
+    completionCommit === beforeHead ||
+    completionParents.length !== 1 ||
+    completionParents[0] !== beforeHead ||
+    !completionClean
+  ) {
+    throw new Error("Host completion metadata changed the proven commit history.");
+  }
 
   if ((await boundary.remoteHead(options.integrationBranch)) !== beforeHead) {
     throw new Error("The Integration Branch changed before publication.");
@@ -235,19 +253,15 @@ export async function executeProcessingRun(
   await boundary.pushIntegration(
     options.integrationBranch,
     beforeHead,
-    afterHead,
+    completionCommit,
   );
   const visibleHead = await boundary.remoteHead(options.integrationBranch);
-  if (visibleHead !== afterHead) {
+  if (visibleHead !== completionCommit) {
     throw new Error("Remote Integration Branch verification failed after push.");
   }
 
-  const runId = options.environment.GITHUB_RUN_ID;
-  if (!runId) {
-    throw new Error("GITHUB_RUN_ID is required for immutable publication metadata.");
-  }
   const marker: PublicationMarker = {
-    afterHead,
+    afterHead: completionCommit,
     beforeHead,
     integrationBranch: options.integrationBranch,
     issue: options.ticket.number,
@@ -256,16 +270,16 @@ export async function executeProcessingRun(
     sessionId: workUnit.sessionId,
     type: "sandcastle-ticket-publication",
   };
+  const pullRequest = await ensureDraftPullRequest(options, boundary);
   const markerComment = await boundary.createPublicationMarker(
     options.ticket.number,
     marker,
   );
-  const pullRequest = await ensureDraftPullRequest(options, boundary);
   await boundary.closeIssue(options.ticket.number);
 
   return {
     beforeHead,
-    completionCommit: afterHead,
+    completionCommit,
     markerCommentId: markerComment.id,
     pullRequest,
     sessionId: workUnit.sessionId,

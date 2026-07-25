@@ -3,10 +3,14 @@ import { promisify } from "node:util";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import { RestFrontierGitHub } from "./github-frontier.js";
+import {
+  completionMessage,
+  type CompletionMetadata,
+  type PublicationMarker,
+} from "./publication-facts.js";
 import type {
   DraftPullRequest,
   IntegrationPullRequest,
-  PublicationMarker,
   TicketHostBoundary,
 } from "./processing-run.js";
 
@@ -87,6 +91,25 @@ export class NodeTicketHost implements TicketHostBoundary {
       throw new Error("Fetched Integration Branch does not match the verified remote HEAD.");
     }
     await this.#git(["checkout", "-B", branch, head]);
+  }
+
+  async annotateCompletionCommit(
+    metadata: CompletionMetadata,
+  ): Promise<string> {
+    const original = await this.#git(["log", "-1", "--format=%B", "HEAD"]);
+    const message = completionMessage(original, metadata);
+    await this.#git([
+      "-c",
+      "user.name=Sandcastle Queue",
+      "-c",
+      "user.email=sandcastle-queue@users.noreply.github.com",
+      "commit",
+      "--amend",
+      "--no-gpg-sign",
+      "-m",
+      message,
+    ]);
+    return this.localHead();
   }
 
   closeIssue(issue: number): Promise<void> {

@@ -9,6 +9,7 @@ import {
   executeProcessingRun,
   type CommandSpec,
 } from "./processing-run.js";
+import { reconcilePublication } from "./reconciliation.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
@@ -109,6 +110,21 @@ async function main(): Promise<void> {
       return;
     }
     const github = new RestFrontierGitHub(process.env);
+    const reconciliation = await reconcilePublication(
+      {
+        baseBranch: config.repository.baseBranch,
+        integrationBranch: config.repository.integrationBranch,
+      },
+      github,
+    );
+    if (
+      reconciliation.status === "conflict" ||
+      reconciliation.status === "reconciled"
+    ) {
+      process.stdout.write(`${JSON.stringify(reconciliation)}\n`);
+      process.exitCode = reconciliation.status === "conflict" ? 4 : 0;
+      return;
+    }
     const result = await activateAndSelectFrontier(
       github,
       {
