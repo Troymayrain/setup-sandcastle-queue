@@ -2,6 +2,12 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import {
+  orchestrateProcessingRun,
+  processingRunInputError,
+  type ProcessingRunInvocation,
+  type ProcessingRunOperation,
+} from "./continuation.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
 import { NodeTicketHost } from "./host-boundary.js";
@@ -99,61 +105,69 @@ async function main(): Promise<void> {
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
   if (isProcessingOperation(operation)) {
-    if (operation !== "start") {
+    const expectedHead = option("--expected-head") || undefined;
+    const predecessorRunId = option("--predecessor-run-id") || undefined;
+    const runInvocation: ProcessingRunInvocation = {
+      baseBranch: config.repository.baseBranch,
+      expectedHead,
+      integrationBranch: config.repository.integrationBranch,
+      operation: operation as ProcessingRunOperation,
+      predecessorRunId,
+      runId: process.env.GITHUB_RUN_ID ?? "",
+    };
+    const inputError = processingRunInputError(runInvocation);
+    if (inputError) {
       process.stdout.write(
-        `${JSON.stringify({
-          reason: "continuation-not-yet-enabled",
-          status: "conflict",
-        })}\n`,
+        `${JSON.stringify({ reason: inputError, status: "conflict" })}\n`,
       );
       process.exitCode = 4;
       return;
     }
     const github = new RestGitHubHost(process.env);
-    const reconciliation = await reconcilePublication(
-      {
-        baseBranch: config.repository.baseBranch,
-        integrationBranch: config.repository.integrationBranch,
-      },
-      github,
-    );
-    if (
-      reconciliation.status === "conflict" ||
-      reconciliation.status === "reconciled"
-    ) {
-      process.stdout.write(`${JSON.stringify(reconciliation)}\n`);
-      process.exitCode = reconciliation.status === "conflict" ? 4 : 0;
-      return;
-    }
-    const result = await activateAndSelectFrontier(
+    const result = await orchestrateProcessingRun(
+      runInvocation,
       github,
       {
-        ownership: config.queue.ownershipLabel,
-        ready: config.queue.readyLabel,
+        process: (ticket) =>
+          executeProcessingRun(
+            {
+              baseBranch: config.repository.baseBranch,
+              commands: config.commands,
+              environment: process.env,
+              integrationBranch: config.repository.integrationBranch,
+              model: config.models.ticket,
+              promptFile: join(
+                repository,
+                ".sandcastle",
+                "prompts",
+                "ticket.md",
+              ),
+              repository,
+              ticket,
+            },
+            new NodeTicketHost(repository, process.env, github),
+          ),
+        reconcile: () =>
+          reconcilePublication(
+            {
+              baseBranch: config.repository.baseBranch,
+              integrationBranch: config.repository.integrationBranch,
+            },
+            github,
+          ),
+        select: (activate) =>
+          activateAndSelectFrontier(
+            github,
+            {
+              ownership: config.queue.ownershipLabel,
+              ready: config.queue.readyLabel,
+            },
+            activate,
+          ),
       },
-      operation === "start",
     );
-    if (result.status !== "ready") {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
-      process.exitCode = result.status === "conflict" ? 4 : 0;
-      return;
-    }
-    const published = await executeProcessingRun(
-      {
-        baseBranch: config.repository.baseBranch,
-        commands: config.commands,
-        environment: process.env,
-        integrationBranch: config.repository.integrationBranch,
-        model: config.models.ticket,
-        promptFile: join(repository, ".sandcastle", "prompts", "ticket.md"),
-        repository,
-        ticket: { body: result.body, number: result.ticket },
-      },
-      new NodeTicketHost(repository, process.env, github),
-    );
-    process.stdout.write(
-      `${JSON.stringify({ activated: result.activated, ...published })}\n`,
-    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exitCode = result.status === "conflict" ? 4 : 0;
     return;
   }
   const role = roleFor(operation);
