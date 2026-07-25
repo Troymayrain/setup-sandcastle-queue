@@ -2,10 +2,11 @@ import type { FrontierGitHub, GitHubIssue } from "./frontier.js";
 import type {
   DraftPullRequest,
   IntegrationPullRequest,
-  PublicationMarker,
-} from "./processing-run.js";
+} from "./integration-pull-request.js";
+import { renderPublicationMarker } from "./publication-facts.js";
+import type { PublicationMarker } from "./publication-facts.js";
 
-export class RestFrontierGitHub implements FrontierGitHub {
+export class RestGitHubHost implements FrontierGitHub {
   readonly #apiUrl: string;
   readonly #repository: string;
   readonly #token: string;
@@ -98,13 +99,65 @@ export class RestFrontierGitHub implements FrontierGitHub {
       "POST",
       `/repos/${this.#repository}/issues/${issue}/comments`,
       {
-        body: `<!-- sandcastle-ticket-publication\n${JSON.stringify(marker)}\n-->`,
+        body: renderPublicationMarker(marker),
       },
     );
     if (!Number.isSafeInteger(result.id) || (result.id ?? 0) <= 0) {
       throw new Error("GitHub omitted the immutable publication marker identity.");
     }
     return { id: result.id! };
+  }
+
+  async getCommit(sha: string): Promise<{
+    message: string;
+    parents: string[];
+    sha: string;
+  }> {
+    const result = await this.#request<{
+      commit?: { message?: string };
+      parents?: Array<{ sha?: string }>;
+      sha?: string;
+    }>("GET", `/repos/${this.#repository}/commits/${sha}`);
+    if (
+      result.sha !== sha ||
+      typeof result.commit?.message !== "string" ||
+      !Array.isArray(result.parents) ||
+      !result.parents.every(({ sha: parent }) =>
+        /^[0-9a-f]{40}$/u.test(parent ?? ""),
+      )
+    ) {
+      throw new Error("GitHub returned invalid remote completion history.");
+    }
+    return {
+      message: result.commit.message,
+      parents: result.parents.map(({ sha: parent }) => parent!),
+      sha,
+    };
+  }
+
+  async listIssueComments(
+    issue: number,
+  ): Promise<Array<{ body: string; id: number }>> {
+    const comments: Array<{ body: string; id: number }> = [];
+    for (let page = 1; ; page += 1) {
+      const current = await this.#request<
+        Array<{ body?: string; id?: number }>
+      >(
+        "GET",
+        `/repos/${this.#repository}/issues/${issue}/comments?per_page=100&page=${page}`,
+      );
+      for (const comment of current) {
+        if (
+          typeof comment.body !== "string" ||
+          !Number.isSafeInteger(comment.id) ||
+          (comment.id ?? 0) <= 0
+        ) {
+          throw new Error("GitHub returned an invalid Issue comment.");
+        }
+        comments.push({ body: comment.body, id: comment.id! });
+      }
+      if (current.length < 100) return comments;
+    }
   }
 
   async closeIssue(issue: number): Promise<void> {

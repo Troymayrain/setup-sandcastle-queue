@@ -4,6 +4,15 @@ import { join } from "node:path";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
 import {
+  ensureIntegrationPullRequest,
+  type DraftPullRequest,
+  type IntegrationPullRequest,
+} from "./integration-pull-request.js";
+import type {
+  CompletionMetadata,
+  PublicationMarker,
+} from "./publication-facts.js";
+import {
   executeWorkUnit,
   type WorkUnitOptions,
   type WorkUnitResult,
@@ -15,29 +24,8 @@ export interface CommandSpec {
   argv: string[];
 }
 
-export interface PublicationMarker {
-  afterHead: string;
-  beforeHead: string;
-  integrationBranch: string;
-  issue: number;
-  runId: string;
-  schemaVersion: 1;
-  sessionId: string;
-  type: "sandcastle-ticket-publication";
-}
-
-export interface IntegrationPullRequest {
-  draft: boolean;
-  number: number;
-  state?: string;
-  url: string;
-}
-
-export interface DraftPullRequest extends IntegrationPullRequest {
-  draft: true;
-}
-
 export interface TicketHostBoundary {
+  annotateCompletionCommit(metadata: CompletionMetadata): Promise<string>;
   checkoutIntegration(branch: string, head: string): Promise<void>;
   closeIssue(issue: number): Promise<void>;
   commitParents(commit: string): Promise<string[]>;
@@ -144,7 +132,7 @@ async function integrationHead(
   return head;
 }
 
-function validateCompletion(
+function validateAgentCompletion(
   beforeHead: string,
   afterHead: string,
   parents: string[],
@@ -164,34 +152,6 @@ function validateCompletion(
       "Ticket completion must be one clean, attributable commit parented by before_head.",
     );
   }
-}
-
-async function ensureDraftPullRequest(
-  options: ProcessingRunOptions,
-  boundary: TicketHostBoundary,
-): Promise<DraftPullRequest> {
-  const input = {
-    base: options.baseBranch,
-    head: options.integrationBranch,
-  };
-  const existing = await boundary.listIntegrationPullRequests(input);
-  if (existing.length > 1) {
-    throw new Error("More than one Integration pull request exists.");
-  }
-  if (existing[0]) {
-    if (existing[0].draft !== true || existing[0].state === "closed") {
-      throw new Error("The Integration pull request is not a draft.");
-    }
-    return { ...existing[0], draft: true };
-  }
-  const created = await boundary.createDraftPullRequest({
-    ...input,
-    title: "Sandcastle Queue integration",
-  });
-  if (created.draft !== true) {
-    throw new Error("GitHub did not create a draft Integration pull request.");
-  }
-  return created;
 }
 
 export async function executeProcessingRun(
@@ -227,7 +187,31 @@ export async function executeProcessingRun(
     boundary.commitParents(afterHead),
     boundary.isClean(),
   ]);
-  validateCompletion(beforeHead, afterHead, parents, workUnit, clean);
+  validateAgentCompletion(beforeHead, afterHead, parents, workUnit, clean);
+
+  const runId = options.environment.GITHUB_RUN_ID;
+  if (!runId) {
+    throw new Error("GITHUB_RUN_ID is required for immutable publication metadata.");
+  }
+  const completionCommit = await boundary.annotateCompletionCommit({
+    beforeHead,
+    issue: options.ticket.number,
+    runId,
+    sessionId: workUnit.sessionId,
+  });
+  const [completionParents, completionClean] = await Promise.all([
+    boundary.commitParents(completionCommit),
+    boundary.isClean(),
+  ]);
+  if (
+    !objectIdPattern.test(completionCommit) ||
+    completionCommit === beforeHead ||
+    completionParents.length !== 1 ||
+    completionParents[0] !== beforeHead ||
+    !completionClean
+  ) {
+    throw new Error("Host completion metadata changed the proven commit history.");
+  }
 
   if ((await boundary.remoteHead(options.integrationBranch)) !== beforeHead) {
     throw new Error("The Integration Branch changed before publication.");
@@ -235,19 +219,15 @@ export async function executeProcessingRun(
   await boundary.pushIntegration(
     options.integrationBranch,
     beforeHead,
-    afterHead,
+    completionCommit,
   );
   const visibleHead = await boundary.remoteHead(options.integrationBranch);
-  if (visibleHead !== afterHead) {
+  if (visibleHead !== completionCommit) {
     throw new Error("Remote Integration Branch verification failed after push.");
   }
 
-  const runId = options.environment.GITHUB_RUN_ID;
-  if (!runId) {
-    throw new Error("GITHUB_RUN_ID is required for immutable publication metadata.");
-  }
   const marker: PublicationMarker = {
-    afterHead,
+    afterHead: completionCommit,
     beforeHead,
     integrationBranch: options.integrationBranch,
     issue: options.ticket.number,
@@ -256,16 +236,19 @@ export async function executeProcessingRun(
     sessionId: workUnit.sessionId,
     type: "sandcastle-ticket-publication",
   };
+  const pullRequest = await ensureIntegrationPullRequest(options, boundary);
+  if (!pullRequest) {
+    throw new Error("The unique Integration pull request is not an open draft.");
+  }
   const markerComment = await boundary.createPublicationMarker(
     options.ticket.number,
     marker,
   );
-  const pullRequest = await ensureDraftPullRequest(options, boundary);
   await boundary.closeIssue(options.ticket.number);
 
   return {
     beforeHead,
-    completionCommit: afterHead,
+    completionCommit,
     markerCommentId: markerComment.id,
     pullRequest,
     sessionId: workUnit.sessionId,

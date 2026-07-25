@@ -35,3 +35,7 @@ _Avoid_: Sandcastle 临时分支, runner worktree
 **Ticket Publication Marker**:
 在 completion commit 已 push 并通过远端 HEAD 校验后，为一张 Ticket 创建且不再修改的发布事实；Issue 只有在该 marker 可见后才能关闭。
 _Avoid_: mutable checkpoint, Batch state
+
+**Ticket Publication Reconciliation**:
+Processing Run 选择新 Ticket 前，从远端 completion commit、Ticket、Ticket Publication Marker 与 Issue 状态唯一证明并补齐中断的 publication；无法唯一证明时停止为 `conflict`。
+_Avoid_: rerun Agent, rewrite history, local checkpoint

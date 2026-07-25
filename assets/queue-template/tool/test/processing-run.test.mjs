@@ -7,6 +7,7 @@ import test from "node:test";
 import { executeProcessingRun } from "../dist/processing-run.js";
 
 const baseHead = "1".repeat(40);
+const agentCommit = "a".repeat(40);
 const completionCommit = "2".repeat(40);
 
 function options(root) {
@@ -38,7 +39,13 @@ function options(root) {
 
 function successfulBoundary(events, overrides = {}, initialIntegrationHead = null) {
   let integrationHead = initialIntegrationHead;
+  let localHead = agentCommit;
   return {
+    async annotateCompletionCommit(metadata) {
+      events.push(["annotate", metadata]);
+      localHead = completionCommit;
+      return completionCommit;
+    },
     async checkoutIntegration(branch, head) {
       events.push(["checkout", branch, head]);
     },
@@ -72,7 +79,7 @@ function successfulBoundary(events, overrides = {}, initialIntegrationHead = nul
     },
     async localHead() {
       events.push(["localHead"]);
-      return completionCommit;
+      return localHead;
     },
     async pushIntegration(branch, before, after) {
       events.push(["push", branch, before, after]);
@@ -95,7 +102,7 @@ function successfulWorkUnit(events, overrides = {}) {
     events.push(["sandcastle", input]);
     return {
       branch: "sandcastle/integration",
-      commits: [completionCommit],
+      commits: [agentCommit],
       role: "ticket",
       sessionId: "fresh-session-58",
       status: "complete",
@@ -132,10 +139,13 @@ test("one bounded Processing Run creates the Integration Branch and publishes in
   );
   assert.ok(names.indexOf("command") < names.indexOf("sandcastle"));
   assert.ok(names.lastIndexOf("command") < names.indexOf("parents"));
+  assert.ok(names.indexOf("parents") < names.indexOf("annotate"));
+  assert.ok(names.indexOf("annotate") < names.indexOf("push"));
   assert.ok(names.indexOf("push") < names.lastIndexOf("remoteHead"));
   assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("marker"));
-  assert.ok(names.indexOf("marker") < names.indexOf("createDraftPr"));
-  assert.ok(names.indexOf("createDraftPr") < names.indexOf("close"));
+  assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("createDraftPr"));
+  assert.ok(names.indexOf("createDraftPr") < names.indexOf("marker"));
+  assert.ok(names.indexOf("marker") < names.indexOf("close"));
 
   const sandcastle = events.find(([name]) => name === "sandcastle")[1];
   assert.equal(sandcastle.role, "ticket");
@@ -165,6 +175,12 @@ test("one bounded Processing Run creates the Integration Branch and publishes in
     sessionId: "fresh-session-58",
     type: "sandcastle-ticket-publication",
   });
+  assert.deepEqual(events.find(([name]) => name === "annotate")[1], {
+    beforeHead: baseHead,
+    issue: 58,
+    runId: "9001",
+    sessionId: "fresh-session-58",
+  });
 });
 
 test("invalid completion proof or project-command failure never reaches publication", async () => {
@@ -176,7 +192,7 @@ test("invalid completion proof or project-command failure never reaches publicat
     {
       name: "multiple commits",
       workUnit: successfulWorkUnit([], {
-        commits: [completionCommit, "3".repeat(40)],
+        commits: [agentCommit, "3".repeat(40)],
       }),
     },
     {
@@ -207,7 +223,9 @@ test("invalid completion proof or project-command failure never reaches publicat
       scenario.name,
     );
     assert.equal(
-      events.some(([name]) => ["push", "marker", "close", "createDraftPr"].includes(name)),
+      events.some(([name]) =>
+        ["annotate", "push", "marker", "close", "createDraftPr"].includes(name),
+      ),
       false,
       scenario.name,
     );
@@ -248,7 +266,7 @@ test("an existing unique open draft Integration PR is reused", async () => {
   assert.equal(events.some(([name]) => name === "createDraftPr"), false);
 });
 
-test("a draft PR failure leaves the Ticket open after its immutable marker", async () => {
+test("a draft PR failure leaves a pushed commit for reconciliation without closing the Ticket", async () => {
   const root = mkdtempSync(join(tmpdir(), "queue-ticket-pr-failure-"));
   const events = [];
   const boundary = successfulBoundary(events, {
@@ -263,6 +281,7 @@ test("a draft PR failure leaves the Ticket open after its immutable marker", asy
     /pull request unavailable/u,
   );
 
-  assert.equal(events.some(([name]) => name === "marker"), true);
+  assert.equal(events.some(([name]) => name === "push"), true);
+  assert.equal(events.some(([name]) => name === "marker"), false);
   assert.equal(events.some(([name]) => name === "close"), false);
 });

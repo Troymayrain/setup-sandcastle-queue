@@ -3,12 +3,13 @@ import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { activateAndSelectFrontier } from "./frontier.js";
-import { RestFrontierGitHub } from "./github-frontier.js";
+import { RestGitHubHost } from "./github-host.js";
 import { NodeTicketHost } from "./host-boundary.js";
 import {
   executeProcessingRun,
   type CommandSpec,
 } from "./processing-run.js";
+import { reconcilePublication } from "./reconciliation.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
@@ -108,7 +109,22 @@ async function main(): Promise<void> {
       process.exitCode = 4;
       return;
     }
-    const github = new RestFrontierGitHub(process.env);
+    const github = new RestGitHubHost(process.env);
+    const reconciliation = await reconcilePublication(
+      {
+        baseBranch: config.repository.baseBranch,
+        integrationBranch: config.repository.integrationBranch,
+      },
+      github,
+    );
+    if (
+      reconciliation.status === "conflict" ||
+      reconciliation.status === "reconciled"
+    ) {
+      process.stdout.write(`${JSON.stringify(reconciliation)}\n`);
+      process.exitCode = reconciliation.status === "conflict" ? 4 : 0;
+      return;
+    }
     const result = await activateAndSelectFrontier(
       github,
       {
