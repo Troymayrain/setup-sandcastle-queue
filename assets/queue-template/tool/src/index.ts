@@ -2,6 +2,11 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import {
+  createQueueAuditRecord,
+  operationAndAuditFailure,
+  writeQueueAuditEvidence,
+} from "./audit.js";
 import { RestGitHubHost } from "./github-host.js";
 import {
   NodeFinalReviewHost,
@@ -14,9 +19,23 @@ import {
   type WorkflowHostOperation,
 } from "./workflow-host.js";
 
+const operations = [
+  "start",
+  "continue",
+  "resume",
+  "final-review",
+  "final-fix",
+  "final-rereview",
+] as const;
+
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+function requestedOperation(): WorkflowHostOperation | undefined {
+  const candidate = option("--operation");
+  return operations.find((operation) => operation === candidate);
 }
 
 async function readStrictConfig(repository: string): Promise<WorkflowHostConfig> {
@@ -33,19 +52,16 @@ async function readStrictConfig(repository: string): Promise<WorkflowHostConfig>
   return candidate as WorkflowHostConfig;
 }
 
-async function main(): Promise<void> {
-  const operation = option("--operation") as WorkflowHostOperation | undefined;
-  if (
-    !operation ||
-    ![
-      "start",
-      "continue",
-      "resume",
-      "final-review",
-      "final-fix",
-      "final-rereview",
-    ].includes(operation)
-  ) {
+async function main(): Promise<
+  | {
+      expectedHead?: string;
+      operation: WorkflowHostOperation;
+      result: { status: string };
+    }
+  | undefined
+> {
+  const operation = requestedOperation();
+  if (!operation) {
     process.stderr.write("Usage: queue-tool --operation <operation>\n");
     process.exitCode = 2;
     return;
@@ -91,6 +107,48 @@ async function main(): Promise<void> {
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.status === "conflict" ? 4 : 0;
+  return {
+    expectedHead: option("--expected-head") || undefined,
+    operation,
+    result,
+  };
 }
 
-await main();
+const startedAt = Date.now();
+let completed: Awaited<ReturnType<typeof main>>;
+try {
+  completed = await main();
+} catch (operationError) {
+  const operation = requestedOperation();
+  if (operation) {
+    try {
+      await writeQueueAuditEvidence(
+        createQueueAuditRecord({
+          durationMs: Date.now() - startedAt,
+          environment: process.env,
+          expectedHead: option("--expected-head"),
+          operation,
+          result: { status: "failure" },
+          runId: process.env.GITHUB_RUN_ID ?? "",
+        }),
+        process.env,
+      );
+    } catch (auditError) {
+      throw operationAndAuditFailure(operationError, auditError);
+    }
+  }
+  throw operationError;
+}
+if (completed) {
+    await writeQueueAuditEvidence(
+      createQueueAuditRecord({
+        durationMs: Date.now() - startedAt,
+        environment: process.env,
+        expectedHead: completed.expectedHead,
+        operation: completed.operation,
+        result: completed.result,
+        runId: process.env.GITHUB_RUN_ID ?? "",
+      }),
+      process.env,
+    );
+}

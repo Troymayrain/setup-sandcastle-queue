@@ -90,7 +90,16 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: \${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: \${{ vars.ANTHROPIC_BASE_URL }}
           GITHUB_TOKEN: \${{ github.token }}
+          SANDCASTLE_AUDIT_PATH: \${{ runner.temp }}/sandcastle-queue-audit.json
         run: npm start -- --operation "\${{ inputs.operation }}" --expected-head "\${{ inputs.expected_head }}" --predecessor-run-id "\${{ inputs.predecessor_run_id }}"
+      - name: Upload the redacted Queue audit
+        if: \${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sandcastle-queue-audit-\${{ github.run_id }}
+          path: \${{ runner.temp }}/sandcastle-queue-audit.json
+          if-no-files-found: error
+          retention-days: 7
 `;
 }
 

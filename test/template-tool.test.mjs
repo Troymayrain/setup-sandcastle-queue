@@ -75,11 +75,34 @@ test("installed Queue Template tool independently installs, typechecks, and test
     /concurrency:\n  group: sandcastle-queue-\$\{\{ github\.repository \}\}\n  cancel-in-progress: false/u,
   );
   assert.match(workflow, /    timeout-minutes: 360/u);
+  assert.match(workflow, /\npermissions: \{\}\n\njobs:/u);
+  assert.match(
+    workflow,
+    /    permissions:\n      actions: write\n      contents: write\n      issues: write\n      pull-requests: write/u,
+  );
   assert.match(
     workflow,
     /SANDCASTLE_JOB_HARD_DEADLINE_MS=.*Date\.now\(\) \+ 350 \* 60_000/u,
   );
   assert.doesNotMatch(workflow, /continuation_(?:count|limit)/u);
+  assert.equal(
+    workflow.match(/ANTHROPIC_AUTH_TOKEN: \$\{\{ secrets\./gu)?.length,
+    1,
+  );
+  assert.equal(
+    workflow.match(/ANTHROPIC_BASE_URL: \$\{\{ vars\./gu)?.length,
+    1,
+  );
+  assert.equal(
+    workflow.match(/GITHUB_TOKEN: \$\{\{ github\.token \}\}/gu)?.length,
+    1,
+  );
+  assert.match(
+    workflow,
+    /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/u,
+  );
+  assert.match(workflow, /retention-days: 7/u);
+  assert.match(workflow, /if-no-files-found: error/u);
 
   const source = readFileSync(join(tool, "src", "work-unit.ts"), "utf8");
   const lock = JSON.parse(readFileSync(join(tool, "package-lock.json"), "utf8"));
@@ -106,6 +129,9 @@ test("installed Queue Template tool independently installs, typechecks, and test
     stdio: "pipe",
   });
 
+  const auditPath = join(repository, "queue-audit.json");
+  const summaryPath = join(repository, "queue-summary.md");
+  const seededSecret = "seeded-secret-must-not-appear";
   const invalidContinuation = spawnSync(
     process.execPath,
     [
@@ -115,24 +141,75 @@ test("installed Queue Template tool independently installs, typechecks, and test
       "--repository",
       repository,
     ],
-    { cwd: tool, encoding: "utf8" },
+    {
+      cwd: tool,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ANTHROPIC_AUTH_TOKEN: seededSecret,
+        GITHUB_RUN_ID: "8001",
+        GITHUB_STEP_SUMMARY: summaryPath,
+        GITHUB_TOKEN: seededSecret,
+        SANDCASTLE_AUDIT_PATH: auditPath,
+      },
+    },
   );
   assert.equal(invalidContinuation.status, 4);
   assert.deepEqual(JSON.parse(invalidContinuation.stdout), {
     reason: "invalid-operation-binding",
     status: "conflict",
   });
+  const audit = JSON.parse(readFileSync(auditPath, "utf8"));
+  assert.deepEqual(Object.keys(audit).sort(), [
+    "durationMs",
+    "operation",
+    "runId",
+    "schemaVersion",
+    "status",
+  ]);
+  assert.equal(Number.isSafeInteger(audit.durationMs), true);
+  assert.equal(audit.operation, "continue");
+  assert.equal(audit.runId, "8001");
+  assert.equal(audit.schemaVersion, 1);
+  assert.equal(audit.status, "conflict");
+  assert.equal(JSON.stringify(audit).includes(seededSecret), false);
+  assert.equal(readFileSync(summaryPath, "utf8").includes(seededSecret), false);
 
   const installedConfigPath = join(repository, ".sandcastle", "config.json");
   const invalidConfig = JSON.parse(readFileSync(installedConfigPath, "utf8"));
   invalidConfig.unknownSecret = "never-print-this-secret";
   writeFileSync(installedConfigPath, `${JSON.stringify(invalidConfig)}\n`);
+  const failureAuditPath = join(repository, "queue-audit-failure.json");
+  const failureSummaryPath = join(repository, "queue-summary-failure.md");
   const invalid = spawnSync(
     process.execPath,
     [join(tool, "dist", "index.js"), "--operation", "start"],
-    { cwd: tool, encoding: "utf8" },
+    {
+      cwd: tool,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ANTHROPIC_AUTH_TOKEN: seededSecret,
+        GITHUB_RUN_ID: "8002",
+        GITHUB_STEP_SUMMARY: failureSummaryPath,
+        GITHUB_TOKEN: seededSecret,
+        SANDCASTLE_AUDIT_PATH: failureAuditPath,
+      },
+    },
   );
   assert.notEqual(invalid.status, 0);
   assert.match(invalid.stderr, /strict schema validation/u);
   assert.equal(invalid.stderr.includes("never-print-this-secret"), false);
+  assert.equal(
+    JSON.parse(readFileSync(failureAuditPath, "utf8")).status,
+    "failure",
+  );
+  assert.equal(
+    readFileSync(failureAuditPath, "utf8").includes(seededSecret),
+    false,
+  );
+  assert.equal(
+    readFileSync(failureSummaryPath, "utf8").includes(seededSecret),
+    false,
+  );
 });
