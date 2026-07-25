@@ -109,7 +109,13 @@ test("installed Queue Template tool independently installs, typechecks, and test
   const lock = JSON.parse(readFileSync(join(tool, "package-lock.json"), "utf8"));
   assert.match(source, /from "@ai-hero\/sandcastle"/u);
   assert.doesNotMatch(source, /setup-sandcastle-queue/u);
-  assert.match(dockerfile, /^USER node$/mu);
+  assert.match(dockerfile, /groupmod --new-name agent node/u);
+  assert.match(
+    dockerfile,
+    /usermod --login agent --home \/home\/agent --move-home node/u,
+  );
+  assert.match(dockerfile, /^USER agent$/mu);
+  assert.match(dockerfile, /^WORKDIR \/home\/agent\/workspace$/mu);
   assert.doesNotMatch(dockerfile, /(?:groupadd|useradd).*1000/u);
   assert.equal(
     lock.packages["node_modules/@ai-hero/sandcastle"].version,
