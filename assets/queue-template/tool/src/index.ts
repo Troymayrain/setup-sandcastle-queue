@@ -2,9 +2,15 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { activateAndSelectFrontier } from "./frontier.js";
+import { RestFrontierGitHub } from "./github-frontier.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
+  queue: {
+    ownershipLabel: string;
+    readyLabel: string;
+  };
   models: {
     finalFix: string;
     finalReview: string;
@@ -26,10 +32,16 @@ function option(name: string): string | undefined {
 }
 
 function roleFor(operation: Operation): WorkUnitRole {
-  if (operation === "start" || operation === "continue" || operation === "resume") {
+  if (isProcessingOperation(operation)) {
     return "ticket";
   }
   return operation;
+}
+
+function isProcessingOperation(
+  operation: Operation,
+): operation is "start" | "continue" | "resume" {
+  return operation === "start" || operation === "continue" || operation === "resume";
 }
 
 function modelFor(role: WorkUnitRole, config: ToolConfig): string {
@@ -71,6 +83,19 @@ async function main(): Promise<void> {
   }
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
+  if (isProcessingOperation(operation)) {
+    const result = await activateAndSelectFrontier(
+      new RestFrontierGitHub(process.env),
+      {
+        ownership: config.queue.ownershipLabel,
+        ready: config.queue.readyLabel,
+      },
+      operation === "start",
+    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exitCode = result.status === "conflict" ? 4 : 0;
+    return;
+  }
   const role = roleFor(operation);
   const promptRole = role === "final-rereview" ? "final-review" : role;
   const promptFile = join(repository, ".sandcastle", "prompts", `${promptRole}.md`);
