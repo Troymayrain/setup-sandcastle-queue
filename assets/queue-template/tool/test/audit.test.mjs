@@ -105,7 +105,7 @@ test("failure evidence never retains an exception or arbitrary result fields", (
   assert.equal(JSON.stringify(record).includes(secret), false);
 });
 
-test("allowlisted identifiers equal to secrets are removed before serialization", () => {
+test("allowlisted identifiers containing secrets are removed before serialization", () => {
   const record = createQueueAuditRecord({
     durationMs: 1,
     environment: {
@@ -113,7 +113,7 @@ test("allowlisted identifiers equal to secrets are removed before serialization"
     },
     operation: "continue",
     result: {
-      sessionId: secret,
+      sessionId: `session-${secret}-suffix`,
       status: "continued",
     },
     runId: "9002",

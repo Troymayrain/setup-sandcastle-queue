@@ -54,6 +54,7 @@ function sensitiveValues(environment: NodeJS.ProcessEnv): Set<string> {
       .filter(
         ([name, value]) =>
           value &&
+          value.length >= 8 &&
           /(?:AUTH_TOKEN|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/u.test(
             name,
           ),
@@ -62,13 +63,20 @@ function sensitiveValues(environment: NodeJS.ProcessEnv): Set<string> {
   );
 }
 
+function containsSensitive(
+  value: string,
+  sensitive: ReadonlySet<string>,
+): boolean {
+  return [...sensitive].some((secret) => value.includes(secret));
+}
+
 function objectId(
   value: unknown,
   sensitive: ReadonlySet<string>,
 ): string | undefined {
   return typeof value === "string" &&
     objectIdPattern.test(value) &&
-    !sensitive.has(value)
+    !containsSensitive(value, sensitive)
     ? value
     : undefined;
 }
@@ -79,7 +87,7 @@ function safeIdentifier(
 ): string | undefined {
   return typeof value === "string" &&
     safeIdentifierPattern.test(value) &&
-    !sensitive.has(value)
+    !containsSensitive(value, sensitive)
     ? value
     : undefined;
 }
@@ -95,7 +103,8 @@ export function createQueueAuditRecord(input: {
   const result = isRecord(input.result) ? input.result : {};
   const sensitive = sensitiveValues(input.environment);
   const runId =
-    runIdPattern.test(input.runId) && !sensitive.has(input.runId)
+    runIdPattern.test(input.runId) &&
+    !containsSensitive(input.runId, sensitive)
       ? input.runId
       : "unknown";
   const durationMs =
@@ -105,7 +114,7 @@ export function createQueueAuditRecord(input: {
   const status =
     typeof result.status === "string" &&
     auditStatuses.has(result.status) &&
-    !sensitive.has(result.status)
+    !containsSensitive(result.status, sensitive)
       ? result.status
       : "failure";
   const ticket =
