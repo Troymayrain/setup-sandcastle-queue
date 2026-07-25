@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { activateAndSelectFrontier } from "./frontier.js";
-import { RestFrontierGitHub } from "./github-frontier.js";
+import { RestGitHubHost } from "./github-host.js";
 import { NodeTicketHost } from "./host-boundary.js";
 import {
   executeProcessingRun,
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
       process.exitCode = 4;
       return;
     }
-    const github = new RestFrontierGitHub(process.env);
+    const github = new RestGitHubHost(process.env);
     const reconciliation = await reconcilePublication(
       {
         baseBranch: config.repository.baseBranch,

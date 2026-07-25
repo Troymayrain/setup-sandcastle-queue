@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
+import {
+  ensureIntegrationPullRequest,
+  type DraftPullRequest,
+  type IntegrationPullRequest,
+} from "./integration-pull-request.js";
 import type {
   CompletionMetadata,
   PublicationMarker,
@@ -17,17 +22,6 @@ const objectIdPattern = /^[0-9a-f]{40}$/u;
 
 export interface CommandSpec {
   argv: string[];
-}
-
-export interface IntegrationPullRequest {
-  draft: boolean;
-  number: number;
-  state?: string;
-  url: string;
-}
-
-export interface DraftPullRequest extends IntegrationPullRequest {
-  draft: true;
 }
 
 export interface TicketHostBoundary {
@@ -160,34 +154,6 @@ function validateAgentCompletion(
   }
 }
 
-async function ensureDraftPullRequest(
-  options: ProcessingRunOptions,
-  boundary: TicketHostBoundary,
-): Promise<DraftPullRequest> {
-  const input = {
-    base: options.baseBranch,
-    head: options.integrationBranch,
-  };
-  const existing = await boundary.listIntegrationPullRequests(input);
-  if (existing.length > 1) {
-    throw new Error("More than one Integration pull request exists.");
-  }
-  if (existing[0]) {
-    if (existing[0].draft !== true || existing[0].state === "closed") {
-      throw new Error("The Integration pull request is not a draft.");
-    }
-    return { ...existing[0], draft: true };
-  }
-  const created = await boundary.createDraftPullRequest({
-    ...input,
-    title: "Sandcastle Queue integration",
-  });
-  if (created.draft !== true) {
-    throw new Error("GitHub did not create a draft Integration pull request.");
-  }
-  return created;
-}
-
 export async function executeProcessingRun(
   options: ProcessingRunOptions,
   boundary: TicketHostBoundary,
@@ -270,7 +236,10 @@ export async function executeProcessingRun(
     sessionId: workUnit.sessionId,
     type: "sandcastle-ticket-publication",
   };
-  const pullRequest = await ensureDraftPullRequest(options, boundary);
+  const pullRequest = await ensureIntegrationPullRequest(options, boundary);
+  if (!pullRequest) {
+    throw new Error("The unique Integration pull request is not an open draft.");
+  }
   const markerComment = await boundary.createPublicationMarker(
     options.ticket.number,
     marker,

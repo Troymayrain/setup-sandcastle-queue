@@ -1,12 +1,12 @@
 import type { FrontierGitHub, GitHubIssue } from "./frontier.js";
-import { renderPublicationMarker } from "./publication-facts.js";
 import type {
   DraftPullRequest,
   IntegrationPullRequest,
-} from "./processing-run.js";
+} from "./integration-pull-request.js";
+import { renderPublicationMarker } from "./publication-facts.js";
 import type { PublicationMarker } from "./publication-facts.js";
 
-export class RestFrontierGitHub implements FrontierGitHub {
+export class RestGitHubHost implements FrontierGitHub {
   readonly #apiUrl: string;
   readonly #repository: string;
   readonly #token: string;

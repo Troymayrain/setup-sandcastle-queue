@@ -41,7 +41,12 @@ function marker(overrides = {}) {
   };
 }
 
-function clientFixture({ comments = [], issueState = "open", remote = afterHead } = {}) {
+function clientFixture({
+  base = beforeHead,
+  comments = [],
+  issueState = "open",
+  remote = afterHead,
+} = {}) {
   const events = [];
   const mutableComments = [...comments];
   let mutableIssueState = issueState;
@@ -65,6 +70,9 @@ function clientFixture({ comments = [], issueState = "open", remote = afterHead 
       },
       async getCommit(sha) {
         events.push(["commit", sha]);
+        if (sha === beforeHead && remote === beforeHead) {
+          return { message: "Base commit", parents: [], sha };
+        }
         return commit();
       },
       async getIssue(issue) {
@@ -81,7 +89,7 @@ function clientFixture({ comments = [], issueState = "open", remote = afterHead 
       },
       async remoteHead(branch) {
         events.push(["head", branch]);
-        return branch === "main" ? beforeHead : remote;
+        return branch === "main" ? base : remote;
       },
     },
     events,
@@ -208,5 +216,19 @@ test("a branch without a provable completion is none only at the current base", 
   assert.equal(
     (await reconcilePublication(options, unprovable.client)).status,
     "conflict",
+  );
+});
+
+test("base catching up to a partially published completion still reconciles it", async () => {
+  const fixture = clientFixture({ base: afterHead });
+
+  const result = await reconcilePublication(options, fixture.client);
+
+  assert.equal(result.status, "reconciled");
+  assert.deepEqual(
+    fixture.events
+      .filter(([name]) => ["createDraftPr", "marker", "close"].includes(name))
+      .map(([name]) => name),
+    ["createDraftPr", "marker", "close"],
   );
 });

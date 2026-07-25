@@ -1,13 +1,14 @@
 import {
+  ensureIntegrationPullRequest,
+  type DraftPullRequest,
+  type IntegrationPullRequest,
+} from "./integration-pull-request.js";
+import {
   parseCompletionMetadata,
   parsePublicationMarker,
   renderPublicationMarker,
   type PublicationMarker,
 } from "./publication-facts.js";
-import type {
-  DraftPullRequest,
-  IntegrationPullRequest,
-} from "./processing-run.js";
 
 export { renderPublicationMarker } from "./publication-facts.js";
 
@@ -89,26 +90,6 @@ function markersFrom(comments: IssueComment[]): PublicationMarker[] | null {
   }
 }
 
-async function ensureDraftPullRequest(
-  options: ReconciliationOptions,
-  boundary: ReconciliationBoundary,
-): Promise<boolean> {
-  const input = {
-    base: options.baseBranch,
-    head: options.integrationBranch,
-  };
-  const existing = await boundary.listIntegrationPullRequests(input);
-  if (existing.length > 1) return false;
-  if (existing[0]) {
-    return existing[0].draft === true && existing[0].state !== "closed";
-  }
-  const created = await boundary.createDraftPullRequest({
-    ...input,
-    title: "Sandcastle Queue integration",
-  });
-  return created.draft === true;
-}
-
 export async function reconcilePublication(
   options: ReconciliationOptions,
   boundary: ReconciliationBoundary,
@@ -119,12 +100,17 @@ export async function reconcilePublication(
   ]);
   if (!baseHead) return conflict("missing-base-head");
   if (!integrationHead) return { status: "none" };
-  if (baseHead === integrationHead) return { status: "none" };
 
   const commit = await boundary.getCommit(integrationHead);
   const metadata = parseCompletionMetadata(commit.message);
   if (
     commit.sha !== integrationHead ||
+    !Array.isArray(commit.parents)
+  ) {
+    return conflict("unprovable-completion-commit");
+  }
+  if (!metadata && baseHead === integrationHead) return { status: "none" };
+  if (
     commit.parents.length !== 1 ||
     !metadata ||
     metadata.beforeHead !== commit.parents[0]
@@ -171,7 +157,7 @@ export async function reconcilePublication(
   if (issue.state === "closed") {
     return conflict("closed-ticket-without-publication-marker");
   }
-  if (!(await ensureDraftPullRequest(options, boundary))) {
+  if (!(await ensureIntegrationPullRequest(options, boundary))) {
     return conflict("ambiguous-integration-pull-request");
   }
   await boundary.createPublicationMarker(metadata.issue, expected);

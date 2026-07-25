@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RestFrontierGitHub } from "../dist/github-frontier.js";
+import { RestGitHubHost } from "../dist/github-host.js";
 
 const head = "a".repeat(40);
 
@@ -33,7 +33,7 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
   };
 
   try {
-    const client = new RestFrontierGitHub({
+    const client = new RestGitHubHost({
       GITHUB_REPOSITORY: "acme/widget",
       GITHUB_TOKEN: "github-secret",
     });

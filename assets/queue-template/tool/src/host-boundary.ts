@@ -2,30 +2,31 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
-import { RestFrontierGitHub } from "./github-frontier.js";
+import { RestGitHubHost } from "./github-host.js";
+import type {
+  DraftPullRequest,
+  IntegrationPullRequest,
+} from "./integration-pull-request.js";
 import {
   completionMessage,
   type CompletionMetadata,
   type PublicationMarker,
 } from "./publication-facts.js";
-import type {
-  DraftPullRequest,
-  IntegrationPullRequest,
-  TicketHostBoundary,
-} from "./processing-run.js";
+import type { TicketHostBoundary } from "./processing-run.js";
 
 const executeFile = promisify(execFile);
 
 export class NodeTicketHost implements TicketHostBoundary {
-  readonly #environment: NodeJS.ProcessEnv;
-  readonly #github: RestFrontierGitHub;
+  readonly #github: RestGitHubHost;
+  readonly #localGitEnvironment: NodeJS.ProcessEnv;
+  readonly #networkGitEnvironment: NodeJS.ProcessEnv;
   readonly #repository: string;
   readonly #remoteUrl: string;
 
   constructor(
     repository: string,
     environment: NodeJS.ProcessEnv,
-    github: RestFrontierGitHub,
+    github: RestGitHubHost,
   ) {
     const repositoryName = environment.GITHUB_REPOSITORY;
     const token = environment.GITHUB_TOKEN;
@@ -36,7 +37,8 @@ export class NodeTicketHost implements TicketHostBoundary {
     ) {
       throw new Error("Host GitHub environment is incomplete.");
     }
-    this.#environment = this.#gitEnvironment(environment, token);
+    this.#localGitEnvironment = this.#gitEnvironment(environment);
+    this.#networkGitEnvironment = this.#gitEnvironment(environment, token);
     this.#github = github;
     this.#repository = repository;
     this.#remoteUrl = `https://github.com/${repositoryName}.git`;
@@ -44,28 +46,36 @@ export class NodeTicketHost implements TicketHostBoundary {
 
   #gitEnvironment(
     environment: NodeJS.ProcessEnv,
-    token: string,
+    token?: string,
   ): NodeJS.ProcessEnv {
     const result = withoutExecutionCredentials(environment);
-    result.GIT_CONFIG_COUNT = "1";
+    result.GIT_CONFIG_COUNT = token ? "1" : "0";
     result.GIT_CONFIG_GLOBAL = "/dev/null";
-    result.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
     result.GIT_CONFIG_NOSYSTEM = "1";
-    result.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${Buffer.from(
-      `x-access-token:${token}`,
-    ).toString("base64")}`;
+    if (token) {
+      result.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+      result.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${Buffer.from(
+        `x-access-token:${token}`,
+      ).toString("base64")}`;
+    } else {
+      delete result.GIT_CONFIG_KEY_0;
+      delete result.GIT_CONFIG_VALUE_0;
+    }
     result.GIT_NO_REPLACE_OBJECTS = "1";
     result.GIT_PAGER = "cat";
+    result.GIT_SSH_COMMAND = "/bin/false";
     result.GIT_TERMINAL_PROMPT = "0";
     return result;
   }
 
-  async #git(arguments_: string[]): Promise<string> {
+  async #git(arguments_: string[], network = false): Promise<string> {
     try {
       const { stdout } = await executeFile("git", arguments_, {
         cwd: this.#repository,
         encoding: "utf8",
-        env: this.#environment,
+        env: network
+          ? this.#networkGitEnvironment
+          : this.#localGitEnvironment,
         maxBuffer: 16 * 1024 * 1024,
       });
       return stdout.trim();
@@ -81,12 +91,15 @@ export class NodeTicketHost implements TicketHostBoundary {
   async checkoutIntegration(branch: string, head: string): Promise<void> {
     await this.#assertBranchName(branch);
     const remoteRef = `refs/remotes/sandcastle-queue/${branch}`;
-    await this.#git([
-      "fetch",
-      "--no-tags",
-      this.#remoteUrl,
-      `+refs/heads/${branch}:${remoteRef}`,
-    ]);
+    await this.#git(
+      [
+        "fetch",
+        "--no-tags",
+        this.#remoteUrl,
+        `+refs/heads/${branch}:${remoteRef}`,
+      ],
+      true,
+    );
     if ((await this.#git(["rev-parse", "--verify", remoteRef])) !== head) {
       throw new Error("Fetched Integration Branch does not match the verified remote HEAD.");
     }
@@ -169,11 +182,10 @@ export class NodeTicketHost implements TicketHostBoundary {
     if (parents.length !== 1 || parents[0] !== before) {
       throw new Error("Completion history changed before publication.");
     }
-    await this.#git([
-      "push",
-      this.#remoteUrl,
-      `${after}:refs/heads/${branch}`,
-    ]);
+    await this.#git(
+      ["push", this.#remoteUrl, `${after}:refs/heads/${branch}`],
+      true,
+    );
   }
 
   remoteHead(branch: string): Promise<string | null> {
