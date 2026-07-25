@@ -195,6 +195,30 @@ test("blocked work never finalizes and new executable work returns to processing
   assert.equal(ready.events.some(([name]) => name === "merge"), false);
 });
 
+test("a Ticket observed after review returns to processing without publishing a verdict", async () => {
+  const state = fixture();
+  const frontiers = [
+    { activated: [], reason: "empty", status: "waiting" },
+    { activated: [], body: "late Ticket", status: "ready", ticket: 63 },
+  ];
+  state.boundary.select = async () => {
+    state.events.push(["frontier"]);
+    return frontiers.shift();
+  };
+
+  const result = await orchestrateFirstFinalReview(
+    options(),
+    state.boundary,
+    state.runWorkUnit,
+  );
+
+  assert.deepEqual(result, { status: "processing", ticket: 63 });
+  assert.equal(state.events.some(([name]) => name === "review"), true);
+  assert.equal(state.events.some(([name]) => name === "dispatch"), true);
+  assert.equal(state.events.some(([name]) => name === "marker"), false);
+  assert.equal(state.events.some(([name]) => name === "ready"), false);
+});
+
 test("stale HEAD and malformed review verdict fail closed without marker or ready transition", async () => {
   const stale = fixture();
   stale.boundary.remoteHead = async () => "3".repeat(40);
