@@ -4,13 +4,13 @@ import type { ReconciliationResult } from "./reconciliation.js";
 const objectIdPattern = /^[0-9a-f]{40}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
 
-export type ProcessingOperation = "start" | "continue" | "resume";
+export type ProcessingRunOperation = "start" | "continue" | "resume";
 
-export interface QueueOperationOptions {
+export interface ProcessingRunInvocation {
   baseBranch: string;
   expectedHead?: string;
   integrationBranch: string;
-  operation: ProcessingOperation;
+  operation: ProcessingRunOperation;
   predecessorRunId?: string;
   runId: string;
 }
@@ -27,7 +27,7 @@ export interface ContinuationBoundary {
   remoteHead(branch: string): Promise<string | null>;
 }
 
-export interface QueueOperationDependencies {
+export interface ProcessingRunDependencies {
   process(ticket: {
     body: string;
     number: number;
@@ -40,7 +40,7 @@ export interface QueueOperationDependencies {
   select(activate: boolean): Promise<FrontierResult>;
 }
 
-export type QueueOperationResult =
+export type WorkflowHostResult =
   | {
       actualHead: string | null;
       expectedHead: string;
@@ -62,13 +62,39 @@ export type QueueOperationResult =
       ticket: number;
     };
 
-function conflict(reason: string): QueueOperationResult {
+function conflict(reason: string): WorkflowHostResult {
   return { reason, status: "conflict" };
 }
 
-export function queueOperationInputError(
-  options: QueueOperationOptions,
+const operationPolicies: Record<
+  ProcessingRunOperation,
+  {
+    automatic: boolean;
+    expectedHead: "forbidden" | "required";
+    predecessorRunId: "optional" | "required";
+  }
+> = {
+  continue: {
+    automatic: true,
+    expectedHead: "required",
+    predecessorRunId: "required",
+  },
+  resume: {
+    automatic: false,
+    expectedHead: "required",
+    predecessorRunId: "optional",
+  },
+  start: {
+    automatic: false,
+    expectedHead: "forbidden",
+    predecessorRunId: "optional",
+  },
+};
+
+export function processingRunInputError(
+  options: ProcessingRunInvocation,
 ): string | null {
+  const policy = operationPolicies[options.operation];
   if (!runIdPattern.test(options.runId)) return "invalid-operation-binding";
   if (
     options.predecessorRunId !== undefined &&
@@ -76,14 +102,11 @@ export function queueOperationInputError(
   ) {
     return "invalid-operation-binding";
   }
-  if (options.operation === "start") {
-    return options.expectedHead === undefined
-      ? null
-      : "invalid-operation-binding";
-  }
   return (
-    objectIdPattern.test(options.expectedHead ?? "") &&
-    (options.operation !== "continue" ||
+    (policy.expectedHead === "forbidden"
+      ? options.expectedHead === undefined
+      : objectIdPattern.test(options.expectedHead ?? "")) &&
+    (policy.predecessorRunId === "optional" ||
       options.predecessorRunId !== undefined)
   )
     ? null
@@ -91,19 +114,20 @@ export function queueOperationInputError(
 }
 
 async function preflight(
-  options: QueueOperationOptions,
+  options: ProcessingRunInvocation,
   boundary: ContinuationBoundary,
-): Promise<QueueOperationResult | null> {
-  const inputError = queueOperationInputError(options);
+): Promise<WorkflowHostResult | null> {
+  const inputError = processingRunInputError(options);
   if (inputError) return conflict(inputError);
+  const policy = operationPolicies[options.operation];
   const actualHead = await boundary.remoteHead(options.integrationBranch);
-  if (options.operation === "start") {
+  if (policy.expectedHead === "forbidden") {
     return actualHead === null
       ? null
       : conflict("manual-start-requires-absent-integration-branch");
   }
   if (actualHead === options.expectedHead) return null;
-  if (options.operation === "continue") {
+  if (policy.automatic) {
     return {
       actualHead,
       expectedHead: options.expectedHead!,
@@ -114,15 +138,15 @@ async function preflight(
 }
 
 async function continueAfterProgress(
-  options: QueueOperationOptions,
+  options: ProcessingRunInvocation,
   boundary: ContinuationBoundary,
-  dependencies: QueueOperationDependencies,
+  dependencies: ProcessingRunDependencies,
   progress: {
     head: string;
     source: "publication" | "reconciliation";
     ticket: number;
   },
-): Promise<QueueOperationResult> {
+): Promise<WorkflowHostResult> {
   if (!objectIdPattern.test(progress.head)) {
     return conflict("progress-head-invalid");
   }
@@ -153,11 +177,11 @@ async function continueAfterProgress(
   };
 }
 
-export async function runQueueOperation(
-  options: QueueOperationOptions,
+export async function orchestrateProcessingRun(
+  options: ProcessingRunInvocation,
   boundary: ContinuationBoundary,
-  dependencies: QueueOperationDependencies,
-): Promise<QueueOperationResult> {
+  dependencies: ProcessingRunDependencies,
+): Promise<WorkflowHostResult> {
   const stopped = await preflight(options, boundary);
   if (stopped) return stopped;
 

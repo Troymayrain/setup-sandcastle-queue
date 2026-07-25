@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runQueueOperation } from "../dist/continuation.js";
+import { orchestrateProcessingRun } from "../dist/continuation.js";
 
 const oldHead = "1".repeat(40);
 const newHead = "2".repeat(40);
@@ -60,10 +60,10 @@ function fixture({
   };
 }
 
-test("stale automatic Continuation succeeds without any side effect", async () => {
+test("stale automatic Continuation Run succeeds without any side effect", async () => {
   const state = fixture({ currentHead: newHead });
 
-  const result = await runQueueOperation(
+  const result = await orchestrateProcessingRun(
     options(),
     state.boundary,
     state.dependencies,
@@ -80,7 +80,7 @@ test("stale automatic Continuation succeeds without any side effect", async () =
 test("stale manual resume fails closed before reconciliation or Agent work", async () => {
   const state = fixture({ currentHead: newHead });
 
-  const result = await runQueueOperation(
+  const result = await orchestrateProcessingRun(
     options({ operation: "resume" }),
     state.boundary,
     state.dependencies,
@@ -94,7 +94,7 @@ test("stale manual resume fails closed before reconciliation or Agent work", asy
 test("confirmed publication fresh-reads Frontier and dispatches only three continuation inputs", async () => {
   const state = fixture();
 
-  const result = await runQueueOperation(
+  const result = await orchestrateProcessingRun(
     options(),
     state.boundary,
     state.dependencies,
@@ -133,7 +133,7 @@ test("waiting, conflict, and zero progress never dispatch", async () => {
   ];
 
   for (const state of cases) {
-    await runQueueOperation(options(), state.boundary, state.dependencies);
+    await orchestrateProcessingRun(options(), state.boundary, state.dependencies);
     assert.equal(
       state.events.some(([name]) => name === "dispatch"),
       false,
@@ -149,7 +149,7 @@ test("reconciled publication dispatches from fresh facts without rerunning an Ag
     reconciliation: { head: newHead, status: "reconciled", ticket: 2 },
   });
 
-  const result = await runQueueOperation(
+  const result = await orchestrateProcessingRun(
     options(),
     state.boundary,
     state.dependencies,
@@ -168,7 +168,7 @@ test("a required dispatch failure fails the current work unit", async () => {
   };
 
   await assert.rejects(
-    runQueueOperation(options(), state.boundary, state.dependencies),
+    orchestrateProcessingRun(options(), state.boundary, state.dependencies),
     /dispatch unavailable/u,
   );
 });

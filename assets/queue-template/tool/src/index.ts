@@ -3,10 +3,10 @@ import { join, resolve } from "node:path";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import {
-  queueOperationInputError,
-  runQueueOperation,
-  type QueueOperationOptions,
-  type ProcessingOperation,
+  orchestrateProcessingRun,
+  processingRunInputError,
+  type ProcessingRunInvocation,
+  type ProcessingRunOperation,
 } from "./continuation.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
@@ -107,15 +107,15 @@ async function main(): Promise<void> {
   if (isProcessingOperation(operation)) {
     const expectedHead = option("--expected-head") || undefined;
     const predecessorRunId = option("--predecessor-run-id") || undefined;
-    const queueOptions: QueueOperationOptions = {
+    const runInvocation: ProcessingRunInvocation = {
       baseBranch: config.repository.baseBranch,
       expectedHead,
       integrationBranch: config.repository.integrationBranch,
-      operation: operation as ProcessingOperation,
+      operation: operation as ProcessingRunOperation,
       predecessorRunId,
       runId: process.env.GITHUB_RUN_ID ?? "",
     };
-    const inputError = queueOperationInputError(queueOptions);
+    const inputError = processingRunInputError(runInvocation);
     if (inputError) {
       process.stdout.write(
         `${JSON.stringify({ reason: inputError, status: "conflict" })}\n`,
@@ -124,8 +124,8 @@ async function main(): Promise<void> {
       return;
     }
     const github = new RestGitHubHost(process.env);
-    const result = await runQueueOperation(
-      queueOptions,
+    const result = await orchestrateProcessingRun(
+      runInvocation,
       github,
       {
         process: (ticket) =>
