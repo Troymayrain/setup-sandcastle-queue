@@ -54,7 +54,6 @@ function sensitiveValues(environment: NodeJS.ProcessEnv): Set<string> {
       .filter(
         ([name, value]) =>
           value &&
-          value.length >= 8 &&
           /(?:AUTH_TOKEN|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/u.test(
             name,
           ),
@@ -67,7 +66,11 @@ function containsSensitive(
   value: string,
   sensitive: ReadonlySet<string>,
 ): boolean {
-  return [...sensitive].some((secret) => value.includes(secret));
+  return [...sensitive].some(
+    (secret) =>
+      value === secret ||
+      (secret.length >= 8 && value.includes(secret)),
+  );
 }
 
 function objectId(

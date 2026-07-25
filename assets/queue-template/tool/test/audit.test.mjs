@@ -123,6 +123,24 @@ test("allowlisted identifiers containing secrets are removed before serializatio
   assert.equal(JSON.stringify(record).includes(secret), false);
 });
 
+test("short sensitive values are still rejected on exact equality", () => {
+  const record = createQueueAuditRecord({
+    durationMs: 1,
+    environment: {
+      PASSWORD: "hunter2",
+    },
+    operation: "continue",
+    result: {
+      sessionId: "hunter2",
+      status: "continued",
+    },
+    runId: "9004",
+  });
+
+  assert.equal(record.sessionId, undefined);
+  assert.equal(JSON.stringify(record).includes("hunter2"), false);
+});
+
 test("audit failures preserve an earlier operation error as the cause", async () => {
   const operationError = new Error("operation failed");
   const auditError = new Error("audit failed");
