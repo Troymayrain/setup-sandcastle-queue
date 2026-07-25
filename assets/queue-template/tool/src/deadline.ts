@@ -39,7 +39,7 @@ export async function runWithTicketDeadline<
   },
 >(
   options: {
-    hardDeadlineMs: number;
+    hardDeadlineAtMs: number;
     reserveMinutes: number;
     ticket: number;
   },
@@ -51,7 +51,7 @@ export async function runWithTicketDeadline<
   scheduler: DeadlineScheduler = realScheduler,
 ): Promise<Result | { completionCommit: string; status: "published"; ticket: number }> {
   if (
-    !Number.isFinite(options.hardDeadlineMs) ||
+    !Number.isFinite(options.hardDeadlineAtMs) ||
     !Number.isSafeInteger(options.reserveMinutes) ||
     options.reserveMinutes <= 0 ||
     !Number.isSafeInteger(options.ticket) ||
@@ -66,7 +66,7 @@ export async function runWithTicketDeadline<
   let timedOut = false;
   const delay = Math.max(
     0,
-    options.hardDeadlineMs -
+    options.hardDeadlineAtMs -
       options.reserveMinutes * 60_000 -
       scheduler.now(),
   );

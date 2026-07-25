@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  inspectPublicationAtDeadline,
   reconcilePublication,
   renderPublicationMarker,
 } from "../dist/reconciliation.js";
@@ -230,5 +231,42 @@ test("base catching up to a partially published completion still reconciles it",
       .filter(([name]) => ["createDraftPr", "marker", "close"].includes(name))
       .map(([name]) => name),
     ["createDraftPr", "marker", "close"],
+  );
+});
+
+test("deadline inspection accepts only complete facts and never repairs partial publication", async () => {
+  const complete = clientFixture({
+    comments: [{ body: renderPublicationMarker(marker()), id: 44 }],
+    issueState: "closed",
+  });
+  assert.deepEqual(
+    await inspectPublicationAtDeadline(
+      {
+        beforeHead,
+        integrationBranch: "sandcastle/integration",
+        ticket: 58,
+      },
+      complete.client,
+    ),
+    { head: afterHead, status: "complete", ticket: 58 },
+  );
+
+  const partial = clientFixture();
+  assert.deepEqual(
+    await inspectPublicationAtDeadline(
+      {
+        beforeHead,
+        integrationBranch: "sandcastle/integration",
+        ticket: 58,
+      },
+      partial.client,
+    ),
+    { status: "unknown" },
+  );
+  assert.equal(
+    partial.events.some(([name]) =>
+      ["createDraftPr", "marker", "close"].includes(name),
+    ),
+    false,
   );
 });

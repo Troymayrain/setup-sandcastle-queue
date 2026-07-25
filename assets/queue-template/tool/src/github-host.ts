@@ -6,7 +6,7 @@ import type {
 import { renderPublicationMarker } from "./publication-facts.js";
 import type { PublicationMarker } from "./publication-facts.js";
 
-type RetryMode = "dispatch" | "none" | "safe";
+type RetryMode = "none" | "retryable";
 
 export class RestGitHubHost implements FrontierGitHub {
   readonly #apiUrl: string;
@@ -65,7 +65,7 @@ export class RestGitHubHost implements FrontierGitHub {
     body?: object,
     allowNotFound = false,
     retryMode: RetryMode =
-      method === "GET" || method === "PATCH" ? "safe" : "none",
+      method === "GET" || method === "PATCH" ? "retryable" : "none",
   ): Promise<T> {
     const serializedBody =
       body === undefined ? undefined : JSON.stringify(body);
@@ -123,7 +123,7 @@ export class RestGitHubHost implements FrontierGitHub {
       `/repos/${this.#repository}/issues/${issue}/labels`,
       { labels: [label] },
       false,
-      "safe",
+      "retryable",
     );
   }
 
@@ -329,7 +329,7 @@ export class RestGitHubHost implements FrontierGitHub {
       `/repos/${this.#repository}/actions/workflows/sandcastle-queue.yml/dispatches`,
       payload,
       false,
-      "dispatch",
+      "retryable",
     );
   }
 }

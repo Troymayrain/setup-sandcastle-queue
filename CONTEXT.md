@@ -28,6 +28,10 @@ _Avoid_: 长驻 runner, 人工续跑, Batch checkpoint
 只处理一张 Ticket 的有界 GitHub Actions run；首次 Processing Run 由维护者人工触发，后续工作通过 Continuation Run 接力。
 _Avoid_: Ticket Run, 多 Ticket 单次 run
 
+**Ticket Deadline**:
+Processing Run 中为当前 Ticket 的 Agent 与项目命令执行预留的截止时间；等于 Queue job hard deadline 减去 Host finalization reserve。到达后取消 Sandcastle，并只从远端 publication facts 判断 complete、absent 或 unknown。
+_Avoid_: runner timeout, retry Agent, mutable timer checkpoint
+
 **Integration Branch**:
 首次队列 workflow 从所选 base branch 创建、并由全部 Continuation Runs 共同推进的稳定远端分支。
 _Avoid_: Sandcastle 临时分支, runner worktree

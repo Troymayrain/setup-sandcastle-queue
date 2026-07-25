@@ -57,7 +57,7 @@ async function deadlineCase(publication) {
   });
   const run = runWithTicketDeadline(
     {
-      hardDeadlineMs: 100_000,
+      hardDeadlineAtMs: 100_000,
       reserveMinutes: 1,
       ticket: 58,
     },
@@ -74,7 +74,7 @@ test("Ticket deadline is exactly hard deadline minus Host finalization reserve",
   const timer = scheduler(10_000);
   const result = await runWithTicketDeadline(
     {
-      hardDeadlineMs: 130_000,
+      hardDeadlineAtMs: 130_000,
       reserveMinutes: 1,
       ticket: 58,
     },

@@ -16,7 +16,10 @@ import {
   executeProcessingRun,
   type CommandSpec,
 } from "./processing-run.js";
-import { reconcilePublication } from "./reconciliation.js";
+import {
+  inspectPublicationAtDeadline,
+  reconcilePublication,
+} from "./reconciliation.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
@@ -111,7 +114,7 @@ async function main(): Promise<void> {
   if (isProcessingOperation(operation)) {
     const expectedHead = option("--expected-head") || undefined;
     const predecessorRunId = option("--predecessor-run-id") || undefined;
-    const hardDeadlineMs = Number(
+    const hardDeadlineAtMs = Number(
       process.env.SANDCASTLE_JOB_HARD_DEADLINE_MS,
     );
     const runInvocation: ProcessingRunInvocation = {
@@ -130,7 +133,7 @@ async function main(): Promise<void> {
       process.exitCode = 4;
       return;
     }
-    if (!Number.isFinite(hardDeadlineMs) || hardDeadlineMs <= 0) {
+    if (!Number.isFinite(hardDeadlineAtMs) || hardDeadlineAtMs <= 0) {
       process.stdout.write(
         `${JSON.stringify({
           reason: "invalid-job-hard-deadline",
@@ -148,7 +151,7 @@ async function main(): Promise<void> {
         process: (ticket) =>
           runWithTicketDeadline(
             {
-              hardDeadlineMs,
+              hardDeadlineAtMs,
               reserveMinutes:
                 config.execution.hostFinalizationReserveMinutes,
               ticket: ticket.number,
@@ -173,34 +176,16 @@ async function main(): Promise<void> {
                 },
                 new NodeTicketHost(repository, process.env, github),
               ),
-            async ({ beforeHead, ticket: expectedTicket }) => {
-              const visibleHead = await github.remoteHead(
-                config.repository.integrationBranch,
-              );
-              if (visibleHead === beforeHead) return { status: "absent" };
-              if (!visibleHead) return { status: "unknown" };
-              const publication = await reconcilePublication(
+            ({ beforeHead, ticket: expectedTicket }) =>
+              inspectPublicationAtDeadline(
                 {
-                  baseBranch: config.repository.baseBranch,
+                  beforeHead,
                   integrationBranch:
                     config.repository.integrationBranch,
+                  ticket: expectedTicket,
                 },
                 github,
-              );
-              if (
-                (publication.status === "complete" ||
-                  publication.status === "reconciled") &&
-                publication.head === visibleHead &&
-                publication.ticket === expectedTicket
-              ) {
-                return {
-                  head: publication.head,
-                  status: "complete",
-                  ticket: publication.ticket,
-                };
-              }
-              return { status: "unknown" };
-            },
+              ),
           ),
         reconcile: () =>
           reconcilePublication(
