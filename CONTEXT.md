@@ -67,3 +67,7 @@ _Avoid_: fixing Agent self-approval, second automatic fix
 **Final Rereview Marker**:
 写入唯一 Integration PR 的不可变远端事实，绑定 Final Fix run、Final Rereview run、完整 Integration/base HEAD 与独立复审 verdict。
 _Avoid_: Final Review Marker, self-approval, mutable rereview state
+
+**Queue Audit Record**:
+每个 workflow-host operation 写入 Job Summary 与短期 artifact 的单条脱敏记录；只包含 allowlisted run、operation、Ticket、session、commit/head、status 与 duration 字段，用于把 Actions run 关联到 GitHub Issues、commits 和 PR markers。它不是恢复状态或长期事实来源。
+_Avoid_: raw Agent transcript, complete command output, custom ledger, checkpoint

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +15,9 @@ import {
   completionMessage,
   renderPublicationMarker,
 } from "../dist/publication-facts.js";
+import { ProcessingDeadlineError } from "../dist/deadline.js";
+import { RestGitHubHost } from "../dist/github-host.js";
+import { executeWorkUnit } from "../dist/work-unit.js";
 import { executeWorkflowHostOperation } from "../dist/workflow-host.js";
 
 const baseHead = "b".repeat(40);
@@ -389,28 +397,34 @@ function workflowConfig() {
   };
 }
 
-function executeInvocation(state, invocation) {
+function workflowRequest(state, invocation, environment) {
+  return {
+    config: workflowConfig(),
+    environment,
+    expectedHead: invocation.expectedHead,
+    operation: invocation.operation,
+    predecessorRunId: invocation.predecessorRunId,
+    promptFiles: {
+      finalFix: state.finalFixPrompt,
+      finalReview: state.finalReviewPrompt,
+      ticket: state.ticketPrompt,
+    },
+    repository: state.repository,
+  };
+}
+
+function executeInvocation(
+  state,
+  invocation,
+  hardDeadlineAtMs = Date.now() + 60 * 60_000,
+) {
   state.currentRunId = invocation.runId;
   return executeWorkflowHostOperation(
-    {
-      config: workflowConfig(),
-      environment: {
+    workflowRequest(state, invocation, {
         GITHUB_RUN_ID: invocation.runId,
         GITHUB_TOKEN: "host-only-token",
-        SANDCASTLE_JOB_HARD_DEADLINE_MS: String(
-          Date.now() + 60 * 60_000,
-        ),
-      },
-      expectedHead: invocation.expectedHead,
-      operation: invocation.operation,
-      predecessorRunId: invocation.predecessorRunId,
-      promptFiles: {
-        finalFix: state.finalFixPrompt,
-        finalReview: state.finalReviewPrompt,
-        ticket: state.ticketPrompt,
-      },
-      repository: state.repository,
-    },
+        SANDCASTLE_JOB_HARD_DEADLINE_MS: String(hardDeadlineAtMs),
+      }),
     {
       finalReviewHost: state,
       github: state,
@@ -635,4 +649,290 @@ test("contradictory owned Ticket facts fail closed without Queue writes", async 
     ),
     false,
   );
+});
+
+test("waiting, stale, no-progress, failure, and cancellation never publish or continue", async () => {
+  const cases = [];
+
+  const waiting = new StatefulQueueFake();
+  waiting.integrationHead = baseHead;
+  waiting.issues = new Map([
+    [
+      10,
+      ticket(10, {
+        assignees: [{ login: "human" }],
+        labels: [
+          { name: "ready-for-agent" },
+          { name: "sandcastle" },
+        ],
+      }),
+    ],
+  ]);
+  cases.push({
+    expectedStatus: "waiting",
+    invocation: {
+      expectedHead: baseHead,
+      operation: "continue",
+      predecessorRunId: "7000",
+      runId: "7001",
+    },
+    state: waiting,
+  });
+
+  const stale = new StatefulQueueFake();
+  stale.integrationHead = baseHead;
+  cases.push({
+    expectedStatus: "stale-continuation",
+    invocation: {
+      expectedHead: "c".repeat(40),
+      operation: "continue",
+      predecessorRunId: "7001",
+      runId: "7002",
+    },
+    state: stale,
+  });
+
+  const noProgress = new StatefulQueueFake();
+  noProgress.issues.clear();
+  cases.push({
+    expectedStatus: "waiting",
+    invocation: {
+      operation: "start",
+      runId: "7003",
+    },
+    state: noProgress,
+  });
+
+  for (const scenario of cases) {
+    const result = await executeInvocation(
+      scenario.state,
+      scenario.invocation,
+    );
+    assert.equal(result.status, scenario.expectedStatus);
+    assert.equal(
+      scenario.state.events.some(([name]) =>
+        ["marker", "close", "dispatch"].includes(name),
+      ),
+      false,
+    );
+  }
+
+  for (const cancellation of [false, true]) {
+    const failed = new StatefulQueueFake();
+    failed.issues = new Map([[201, ticket(201)]]);
+    failed.runWorkUnit = async () => {
+      const error = new Error(cancellation ? "cancelled" : "Agent failed");
+      if (cancellation) error.name = "AbortError";
+      throw error;
+    };
+    await assert.rejects(
+      executeInvocation(failed, {
+        operation: "start",
+        runId: cancellation ? "7011" : "7010",
+      }),
+      cancellation ? /cancelled/u : /Agent failed/u,
+    );
+    assert.equal(
+      failed.events.some(([name]) =>
+        ["marker", "close", "dispatch"].includes(name),
+      ),
+      false,
+    );
+  }
+});
+
+test("deadline absence and unknown publication fail before automatic continuation", async () => {
+  const absent = new StatefulQueueFake();
+  let bindingsCreated = false;
+  const absentResult = await executeWorkflowHostOperation(
+    workflowRequest(
+      absent,
+      { operation: "start", runId: "7100" },
+      {
+        GITHUB_RUN_ID: "7100",
+        GITHUB_TOKEN: "host-only-token",
+      },
+    ),
+    () => {
+      bindingsCreated = true;
+      throw new Error("bindings must remain lazy");
+    },
+  );
+  assert.deepEqual(absentResult, {
+    reason: "invalid-job-hard-deadline",
+    status: "conflict",
+  });
+  assert.equal(bindingsCreated, false);
+
+  const unknown = new StatefulQueueFake();
+  unknown.issues = new Map([[201, ticket(201)]]);
+  unknown.runWorkUnit = async ({ signal }) => {
+    unknown.integrationHead = objectId("unknown-publication", 201);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    throw signal?.reason ?? new Error("deadline");
+  };
+  unknown.getCommit = async () => {
+    throw new Error("remote publication facts unavailable");
+  };
+  await assert.rejects(
+    executeInvocation(
+      unknown,
+      { operation: "start", runId: "7101" },
+      Date.now(),
+    ),
+    (error) =>
+      error instanceof ProcessingDeadlineError &&
+      error.status === "publication-unknown",
+  );
+  assert.equal(
+    unknown.events.some(([name]) =>
+      ["marker", "close", "dispatch"].includes(name),
+    ),
+    false,
+  );
+});
+
+test("retry exhaustion at the workflow-host GitHub boundary performs no writes", async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError("transient network failure");
+  };
+  const state = new StatefulQueueFake();
+  const github = new RestGitHubHost(
+    {
+      GITHUB_REPOSITORY: "acme/widget",
+      GITHUB_TOKEN: "host-only-token",
+    },
+    { sleep: async () => {} },
+  );
+  try {
+    await assert.rejects(
+      executeWorkflowHostOperation(
+        workflowRequest(
+          state,
+          {
+            expectedHead: baseHead,
+            operation: "continue",
+            predecessorRunId: "7200",
+            runId: "7201",
+          },
+          {
+            GITHUB_RUN_ID: "7201",
+            GITHUB_TOKEN: "host-only-token",
+            SANDCASTLE_JOB_HARD_DEADLINE_MS: String(
+              Date.now() + 60 * 60_000,
+            ),
+          },
+        ),
+        {
+          finalReviewHost: state,
+          github,
+          integrationHost: state,
+          runWorkUnit: state.runWorkUnit,
+        },
+      ),
+      /transient network failure/u,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(attempts, 3);
+  assert.equal(
+    state.events.some(([name]) =>
+      ["marker", "close", "dispatch"].includes(name),
+    ),
+    false,
+  );
+});
+
+test("workflow-host exposes credentials only at the real Sandcastle execution boundary", async () => {
+  const state = new StatefulQueueFake();
+  state.issues = new Map([[201, ticket(201)]]);
+  const rawPaths = [];
+  const observedAgents = [];
+  const observedSandboxes = [];
+  state.runWorkUnit = (input) =>
+    executeWorkUnit(input, {
+      claudeCode(model, options) {
+        observedAgents.push({ model, options });
+        return { model, options };
+      },
+      docker(options) {
+        observedSandboxes.push(options);
+        return { options };
+      },
+      async run(options) {
+        const selected = readFileSync(options.promptFile, "utf8").match(
+          /## Selected GitHub Ticket #([1-9][0-9]*)/u,
+        );
+        assert.ok(selected);
+        const issue = Number(selected[1]);
+        state.currentTicket = issue;
+        const agentCommit = objectId("credential-agent", issue);
+        const beforeHead = state.integrationHead ?? state.baseHead;
+        state.commits.set(agentCommit, {
+          message: `Agent commit for #${issue}`,
+          parents: [beforeHead],
+          sha: agentCommit,
+        });
+        state.localHeadValue = agentCommit;
+        rawPaths.push(options.logging.path);
+        writeFileSync(
+          options.logging.path,
+          '{"type":"result","redact":"provider-secret"}\n',
+        );
+        return {
+          branch: integrationBranch,
+          commits: [{ sha: agentCommit }],
+          iterations: [{ sessionId: "credential-session-201" }],
+          stdout: "complete",
+        };
+      },
+    });
+
+  const result = await executeWorkflowHostOperation(
+    workflowRequest(
+      state,
+      { operation: "start", runId: "7301" },
+      {
+        ANTHROPIC_AUTH_TOKEN: "provider-secret",
+        ANTHROPIC_BASE_URL: "https://provider.example",
+        GITHUB_RUN_ID: "7301",
+        GITHUB_TOKEN: "github-secret",
+        SANDCASTLE_JOB_HARD_DEADLINE_MS: String(
+          Date.now() + 60 * 60_000,
+        ),
+      },
+    ),
+    {
+      finalReviewHost: state,
+      github: state,
+      integrationHost: state,
+      runWorkUnit: state.runWorkUnit,
+    },
+  );
+
+  assert.equal(result.status, "final-review-dispatched");
+  assert.deepEqual(observedAgents[0].options.env, {
+    ANTHROPIC_AUTH_TOKEN: "provider-secret",
+    ANTHROPIC_BASE_URL: "https://provider.example",
+  });
+  assert.equal(observedAgents[0].options.env.GITHUB_TOKEN, undefined);
+  assert.deepEqual(observedSandboxes[0].env, {});
+  const commandEnvironments = state.events
+    .filter(([name]) => name === "command")
+    .map(([, , , environment]) => environment);
+  assert.equal(
+    commandEnvironments.every(
+      (environment) =>
+        environment.GITHUB_TOKEN === undefined &&
+        environment.ANTHROPIC_AUTH_TOKEN === undefined &&
+        environment.ANTHROPIC_BASE_URL === undefined,
+    ),
+    true,
+  );
+  assert.equal(rawPaths.length, 1);
+  assert.equal(rawPaths.every((path) => !existsSync(path)), true);
 });
