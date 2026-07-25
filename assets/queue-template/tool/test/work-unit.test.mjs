@@ -65,6 +65,8 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     });
     assert.equal(options.agent.options.env.GITHUB_TOKEN, undefined);
     assert.deepEqual(options.sandbox.options.env, {});
+    assert.equal(options.sandbox.options.containerUid, 1000);
+    assert.equal(options.sandbox.options.containerGid, 1000);
   }
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
   assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {

@@ -28,7 +28,12 @@ export interface SandcastleBoundary {
     model: string,
     options: { captureSessions: true; env: Record<string, string> },
   ) => unknown;
-  docker: (options: { env: Record<string, string>; imageName: string }) => unknown;
+  docker: (options: {
+    containerGid: number;
+    containerUid: number;
+    env: Record<string, string>;
+    imageName: string;
+  }) => unknown;
   run: (options: Record<string, unknown>) => Promise<RunResultLike>;
 }
 
@@ -130,6 +135,8 @@ export async function executeWorkUnit(
       name: `queue-${options.role}`,
       promptFile: resolve(options.promptFile),
       sandbox: boundary.docker({
+        containerGid: 1000,
+        containerUid: 1000,
         env: {},
         imageName: "sandcastle-queue-template:local",
       }),

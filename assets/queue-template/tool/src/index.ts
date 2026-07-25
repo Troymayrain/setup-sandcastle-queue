@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
@@ -37,6 +38,20 @@ function modelFor(role: WorkUnitRole, config: ToolConfig): string {
   return config.models.finalReview;
 }
 
+async function readStrictConfig(repository: string): Promise<ToolConfig> {
+  const [source, schemaSource] = await Promise.all([
+    readFile(join(repository, ".sandcastle", "config.json"), "utf8"),
+    readFile(join(repository, ".sandcastle", "config.schema.json"), "utf8"),
+  ]);
+  const candidate: unknown = JSON.parse(source);
+  const schema = JSON.parse(schemaSource) as object;
+  const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+  if (!validate(candidate)) {
+    throw new Error("Queue configuration failed strict schema validation.");
+  }
+  return candidate as ToolConfig;
+}
+
 async function main(): Promise<void> {
   const operation = option("--operation") as Operation | undefined;
   if (
@@ -55,9 +70,7 @@ async function main(): Promise<void> {
     return;
   }
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
-  const config = JSON.parse(
-    await readFile(join(repository, ".sandcastle", "config.json"), "utf8"),
-  ) as ToolConfig;
+  const config = await readStrictConfig(repository);
   const role = roleFor(operation);
   const promptRole = role === "final-rereview" ? "final-review" : role;
   const promptFile = join(repository, ".sandcastle", "prompts", `${promptRole}.md`);

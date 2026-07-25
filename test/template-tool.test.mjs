@@ -84,4 +84,17 @@ test("installed Queue Template tool independently installs, typechecks, and test
     encoding: "utf8",
     stdio: "pipe",
   });
+
+  const installedConfigPath = join(repository, ".sandcastle", "config.json");
+  const invalidConfig = JSON.parse(readFileSync(installedConfigPath, "utf8"));
+  invalidConfig.unknownSecret = "never-print-this-secret";
+  writeFileSync(installedConfigPath, `${JSON.stringify(invalidConfig)}\n`);
+  const invalid = spawnSync(
+    process.execPath,
+    [join(tool, "dist", "index.js"), "--operation", "start"],
+    { cwd: tool, encoding: "utf8" },
+  );
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /strict schema validation/u);
+  assert.equal(invalid.stderr.includes("never-print-this-secret"), false);
 });

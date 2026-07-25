@@ -13,7 +13,8 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@ai-hero/sandcastle": "0.12.0"
+    "@ai-hero/sandcastle": "0.12.0",
+    "ajv": "8.20.0"
   },
   "devDependencies": {
     "@standard-schema/spec": "1.1.0",
