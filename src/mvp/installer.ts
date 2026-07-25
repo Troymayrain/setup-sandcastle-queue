@@ -5,12 +5,12 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   rmdir,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import {
   dirname,
   isAbsolute,
@@ -29,14 +29,15 @@ import { renderQueueTemplate, type TemplateAsset } from "./template.js";
 const execute = promisify(execFile);
 
 interface AssetPrecondition {
+  kind: "absent" | "conflict" | "regular-file";
   path: string;
   sha256: string | null;
-  type: "absent" | "file";
 }
 
 interface FrozenPreconditions {
   assets: AssetPrecondition[];
-  head: string;
+  headCommit: string;
+  headReference: string;
   indexSha256: string;
 }
 
@@ -97,22 +98,22 @@ async function readPrecondition(
   asset: TemplateAsset,
 ): Promise<AssetPrecondition> {
   if (!(await parentsAreDirectories(root, asset.path))) {
-    return { path: asset.path, sha256: null, type: "file" };
+    return { kind: "conflict", path: asset.path, sha256: null };
   }
   const target = assertSafeAssetPath(root, asset.path);
   try {
     const metadata = await lstat(target);
     if (!metadata.isFile()) {
-      return { path: asset.path, sha256: null, type: "file" };
+      return { kind: "conflict", path: asset.path, sha256: null };
     }
     return {
+      kind: "regular-file",
       path: asset.path,
       sha256: sha256(await readFile(target)),
-      type: "file",
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { path: asset.path, sha256: null, type: "absent" };
+      return { kind: "absent", path: asset.path, sha256: null };
     }
     throw new CliError(
       3,
@@ -126,9 +127,12 @@ async function inspect(root: string, assets: TemplateAsset[]): Promise<Inventory
   const inventory: Inventory = { conflicting: [], matching: [], missing: [] };
   for (const asset of assets) {
     const precondition = await readPrecondition(root, asset);
-    if (precondition.type === "absent") {
+    if (precondition.kind === "absent") {
       inventory.missing.push(asset.path);
-    } else if (precondition.sha256 === sha256(asset.content)) {
+    } else if (
+      precondition.kind === "regular-file" &&
+      precondition.sha256 === sha256(asset.content)
+    ) {
       inventory.matching.push(asset.path);
     } else {
       inventory.conflicting.push(asset.path);
@@ -149,42 +153,23 @@ async function writeTree(root: string, assets: TemplateAsset[]): Promise<void> {
   }
 }
 
-async function renderPatch(assets: TemplateAsset[]): Promise<string> {
-  const temporary = await mkdtemp(join(tmpdir(), "sandcastle-init-"));
-  const before = join(temporary, "before");
-  const after = join(temporary, "after");
-  await Promise.all([mkdir(before), mkdir(after)]);
-  try {
-    await writeTree(after, assets);
-    try {
-      await execute(
-        "git",
-        [
-          "diff",
-          "--no-index",
-          "--no-ext-diff",
-          "--src-prefix=a/",
-          "--dst-prefix=b/",
-          "--",
-          "before",
-          "after",
-        ],
-        { cwd: temporary, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-      );
-      return "";
-    } catch (error) {
-      const failure = error as { code?: number; stdout?: string };
-      if (failure.code === 1 && typeof failure.stdout === "string") {
-        return failure.stdout
-          .replaceAll("a/before/", "a/")
-          .replaceAll("a/after/", "a/")
-          .replaceAll("b/after/", "b/");
-      }
-      throw new CliError(3, "PREVIEW_FAILED", "Unable to render installation preview.");
-    }
-  } finally {
-    await rm(temporary, { force: true, recursive: true });
-  }
+function renderPatch(assets: TemplateAsset[]): string {
+  return assets
+    .map((asset) => {
+      const lines = asset.content.endsWith("\n")
+        ? asset.content.slice(0, -1).split("\n")
+        : asset.content.split("\n");
+      return [
+        `diff --git a/${asset.path} b/${asset.path}`,
+        "new file mode 100644",
+        "--- /dev/null",
+        `+++ b/${asset.path}`,
+        `@@ -0,0 +1,${lines.length} @@`,
+        ...lines.map((line) => `+${line}`),
+        "",
+      ].join("\n");
+    })
+    .join("");
 }
 
 async function git(root: string, args: string[]): Promise<string> {
@@ -202,13 +187,22 @@ async function git(root: string, args: string[]): Promise<string> {
 }
 
 async function freeze(root: string, assets: TemplateAsset[]): Promise<FrozenPreconditions> {
-  const [head, index] = await Promise.all([
+  const [headCommit, headReference, indexPathSource] = await Promise.all([
     git(root, ["rev-parse", "HEAD"]),
-    git(root, ["ls-files", "--stage", "-z"]),
+    git(root, ["rev-parse", "--symbolic-full-name", "HEAD"]),
+    git(root, ["rev-parse", "--git-path", "index"]),
   ]);
+  const indexPath = indexPathSource.trim();
+  const index = await readFile(
+    isAbsolute(indexPath) ? indexPath : resolve(root, indexPath),
+  ).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return Buffer.alloc(0);
+    throw new CliError(3, "GIT_INSPECTION_FAILED", "Unable to inspect repository index.");
+  });
   const preconditions: FrozenPreconditions = {
     assets: [],
-    head: head.trim(),
+    headCommit: headCommit.trim(),
+    headReference: headReference.trim(),
     indexSha256: sha256(index),
   };
   for (const asset of assets) {
@@ -251,7 +245,7 @@ export async function previewInit(
   }
   return {
     assets,
-    patch: await renderPatch(assets),
+    patch: renderPatch(assets),
     preconditions: await freeze(root, assets),
   };
 }
@@ -291,6 +285,25 @@ async function transactionRoot(root: string): Promise<string> {
   return mkdtemp(join(gitDirectory, "sandcastle", "install-"));
 }
 
+async function assertResolvedParentInside(root: string, target: string): Promise<void> {
+  const [resolvedRoot, resolvedParent] = await Promise.all([
+    realpath(root),
+    realpath(dirname(target)),
+  ]);
+  const fromRoot = relative(resolvedRoot, resolvedParent);
+  if (
+    fromRoot === ".." ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  ) {
+    throw new CliError(
+      4,
+      "INSTALL_PATH_SYMLINK_FORBIDDEN",
+      "Queue Template paths cannot resolve outside the repository.",
+    );
+  }
+}
+
 export async function applyInit(root: string, preview: InitPreview): Promise<void> {
   const current = await freeze(root, preview.assets);
   if (!samePreconditions(preview.preconditions, current)) {
@@ -311,16 +324,29 @@ export async function applyInit(root: string, preview: InitPreview): Promise<voi
     for (const asset of preview.assets) {
       const target = await ensureParents(root, asset.path, createdDirectories);
       const source = join(staged, asset.path);
+      await assertResolvedParentInside(root, target);
       await link(source, target);
       installed.push(target);
+      await assertResolvedParentInside(root, target);
       await unlink(source);
     }
   } catch (error) {
+    const rollbackFailures: string[] = [];
     for (const target of installed.reverse()) {
-      await unlink(target).catch(() => undefined);
+      await unlink(target).catch(() => rollbackFailures.push(relative(root, target)));
     }
     for (const directory of createdDirectories.reverse()) {
-      await rmdir(directory).catch(() => undefined);
+      await rmdir(directory).catch(() =>
+        rollbackFailures.push(relative(root, directory)),
+      );
+    }
+    if (rollbackFailures.length > 0) {
+      throw new CliError(
+        3,
+        "INSTALLATION_ROLLBACK_FAILED",
+        "Installation failed and rollback could not remove every transaction path.",
+        { inventory: { rollbackFailures: rollbackFailures.sort() } },
+      );
     }
     if (error instanceof CliError) throw error;
     throw new CliError(

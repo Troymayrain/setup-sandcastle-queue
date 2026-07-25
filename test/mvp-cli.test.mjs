@@ -301,7 +301,7 @@ test("init reports a parent-path collision as an exact conflict inventory", () =
   assert.ok(output.inventory.conflicting.includes(".sandcastle/config.json"));
 });
 
-for (const staleKind of ["head", "index", "target"]) {
+for (const staleKind of ["head", "head-reference", "index", "index-flags", "target"]) {
   test(`init rejects a stale ${staleKind} after the preview confirmation boundary`, async () => {
     const repository = createRepository();
     const config = writeConfig(repository);
@@ -324,9 +324,19 @@ for (const staleKind of ["head", "index", "target"]) {
             "-m",
             "head changed",
           ]);
+        } else if (staleKind === "head-reference") {
+          execFileSync("git", ["-C", repository, "switch", "-c", "same-head"]);
         } else if (staleKind === "index") {
           writeFileSync(join(repository, "INDEX-CHANGE"), "changed\n");
           execFileSync("git", ["-C", repository, "add", "INDEX-CHANGE"]);
+        } else if (staleKind === "index-flags") {
+          execFileSync("git", [
+            "-C",
+            repository,
+            "update-index",
+            "--assume-unchanged",
+            "README.md",
+          ]);
         } else {
           mkdirSync(join(repository, ".sandcastle"), { recursive: true });
           writeFileSync(join(repository, ".sandcastle", "README.md"), "occupied\n");
