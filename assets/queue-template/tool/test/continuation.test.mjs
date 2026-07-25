@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { orchestrateProcessingRun } from "../dist/continuation.js";
+import { ProcessingDeadlineError } from "../dist/deadline.js";
 
 const oldHead = "1".repeat(40);
 const newHead = "2".repeat(40);
@@ -171,4 +172,29 @@ test("a required dispatch failure fails the current work unit", async () => {
     orchestrateProcessingRun(options(), state.boundary, state.dependencies),
     /dispatch unavailable/u,
   );
+});
+
+test("deadline absence or uncertainty fails without dispatching a Continuation Run", async () => {
+  for (const status of [
+    "ticket-deadline-exceeded",
+    "publication-unknown",
+  ]) {
+    const state = fixture();
+    state.dependencies.process = async () => {
+      throw new ProcessingDeadlineError(status);
+    };
+    await assert.rejects(
+      orchestrateProcessingRun(
+        options(),
+        state.boundary,
+        state.dependencies,
+      ),
+      (error) =>
+        error instanceof ProcessingDeadlineError && error.status === status,
+    );
+    assert.equal(
+      state.events.some(([name]) => name === "dispatch"),
+      false,
+    );
+  }
 });

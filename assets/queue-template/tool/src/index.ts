@@ -8,6 +8,7 @@ import {
   type ProcessingRunInvocation,
   type ProcessingRunOperation,
 } from "./continuation.js";
+import { runWithTicketDeadline } from "./deadline.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
 import { NodeTicketHost } from "./host-boundary.js";
@@ -23,6 +24,9 @@ interface ToolConfig {
     bootstrap: CommandSpec[];
     test: CommandSpec[];
     verification: CommandSpec[];
+  };
+  execution: {
+    hostFinalizationReserveMinutes: number;
   };
   queue: {
     ownershipLabel: string;
@@ -107,6 +111,9 @@ async function main(): Promise<void> {
   if (isProcessingOperation(operation)) {
     const expectedHead = option("--expected-head") || undefined;
     const predecessorRunId = option("--predecessor-run-id") || undefined;
+    const hardDeadlineMs = Number(
+      process.env.SANDCASTLE_JOB_HARD_DEADLINE_MS,
+    );
     const runInvocation: ProcessingRunInvocation = {
       baseBranch: config.repository.baseBranch,
       expectedHead,
@@ -123,29 +130,77 @@ async function main(): Promise<void> {
       process.exitCode = 4;
       return;
     }
+    if (!Number.isFinite(hardDeadlineMs) || hardDeadlineMs <= 0) {
+      process.stdout.write(
+        `${JSON.stringify({
+          reason: "invalid-job-hard-deadline",
+          status: "conflict",
+        })}\n`,
+      );
+      process.exitCode = 4;
+      return;
+    }
     const github = new RestGitHubHost(process.env);
     const result = await orchestrateProcessingRun(
       runInvocation,
       github,
       {
         process: (ticket) =>
-          executeProcessingRun(
+          runWithTicketDeadline(
             {
-              baseBranch: config.repository.baseBranch,
-              commands: config.commands,
-              environment: process.env,
-              integrationBranch: config.repository.integrationBranch,
-              model: config.models.ticket,
-              promptFile: join(
-                repository,
-                ".sandcastle",
-                "prompts",
-                "ticket.md",
-              ),
-              repository,
-              ticket,
+              hardDeadlineMs,
+              reserveMinutes:
+                config.execution.hostFinalizationReserveMinutes,
+              ticket: ticket.number,
             },
-            new NodeTicketHost(repository, process.env, github),
+            (lifecycle) =>
+              executeProcessingRun(
+                {
+                  baseBranch: config.repository.baseBranch,
+                  commands: config.commands,
+                  environment: process.env,
+                  integrationBranch: config.repository.integrationBranch,
+                  lifecycle,
+                  model: config.models.ticket,
+                  promptFile: join(
+                    repository,
+                    ".sandcastle",
+                    "prompts",
+                    "ticket.md",
+                  ),
+                  repository,
+                  ticket,
+                },
+                new NodeTicketHost(repository, process.env, github),
+              ),
+            async ({ beforeHead, ticket: expectedTicket }) => {
+              const visibleHead = await github.remoteHead(
+                config.repository.integrationBranch,
+              );
+              if (visibleHead === beforeHead) return { status: "absent" };
+              if (!visibleHead) return { status: "unknown" };
+              const publication = await reconcilePublication(
+                {
+                  baseBranch: config.repository.baseBranch,
+                  integrationBranch:
+                    config.repository.integrationBranch,
+                },
+                github,
+              );
+              if (
+                (publication.status === "complete" ||
+                  publication.status === "reconciled") &&
+                publication.head === visibleHead &&
+                publication.ticket === expectedTicket
+              ) {
+                return {
+                  head: publication.head,
+                  status: "complete",
+                  ticket: publication.ticket,
+                };
+              }
+              return { status: "unknown" };
+            },
           ),
         reconcile: () =>
           reconcilePublication(

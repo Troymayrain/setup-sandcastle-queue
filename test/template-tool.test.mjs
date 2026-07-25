@@ -74,6 +74,11 @@ test("installed Queue Template tool independently installs, typechecks, and test
     workflow,
     /concurrency:\n  group: sandcastle-queue-\$\{\{ github\.repository \}\}\n  cancel-in-progress: false/u,
   );
+  assert.match(workflow, /    timeout-minutes: 360/u);
+  assert.match(
+    workflow,
+    /SANDCASTLE_JOB_HARD_DEADLINE_MS=.*Date\.now\(\) \+ 350 \* 60_000/u,
+  );
   assert.doesNotMatch(workflow, /continuation_(?:count|limit)/u);
 
   const source = readFileSync(join(tool, "src", "work-unit.ts"), "utf8");

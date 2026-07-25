@@ -6,20 +6,57 @@ import type {
 import { renderPublicationMarker } from "./publication-facts.js";
 import type { PublicationMarker } from "./publication-facts.js";
 
+type RetryMode = "dispatch" | "none" | "safe";
+
 export class RestGitHubHost implements FrontierGitHub {
   readonly #apiUrl: string;
+  readonly #now: () => number;
   readonly #repository: string;
+  readonly #sleep: (delayMs: number) => Promise<void>;
   readonly #token: string;
 
-  constructor(environment: NodeJS.ProcessEnv) {
+  constructor(
+    environment: NodeJS.ProcessEnv,
+    retry: {
+      now?: () => number;
+      sleep?: (delayMs: number) => Promise<void>;
+    } = {},
+  ) {
     const token = environment.GITHUB_TOKEN;
     const repository = environment.GITHUB_REPOSITORY;
     if (!token || !repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) {
       throw new Error("Host GitHub environment is incomplete.");
     }
     this.#apiUrl = (environment.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/u, "");
+    this.#now = retry.now ?? (() => Date.now());
     this.#repository = repository;
+    this.#sleep =
+      retry.sleep ??
+      ((delayMs) =>
+        new Promise((resolve) => {
+          setTimeout(resolve, delayMs);
+        }));
     this.#token = token;
+  }
+
+  #retryDelay(response: Response | undefined, attempt: number): number {
+    const retryAfter = response?.headers.get("retry-after");
+    if (retryAfter && /^(?:0|[1-9][0-9]*)$/u.test(retryAfter)) {
+      return Math.min(30_000, Number(retryAfter) * 1_000);
+    }
+    const retryDate = retryAfter ? Date.parse(retryAfter) : Number.NaN;
+    if (Number.isFinite(retryDate)) {
+      return Math.min(30_000, Math.max(0, retryDate - this.#now()));
+    }
+    return Math.min(5_000, 250 * 4 ** (attempt - 1));
+  }
+
+  #transientNetworkError(error: unknown): boolean {
+    return (
+      error instanceof TypeError ||
+      (error instanceof DOMException &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+    );
   }
 
   async #request<T>(
@@ -27,27 +64,57 @@ export class RestGitHubHost implements FrontierGitHub {
     path: string,
     body?: object,
     allowNotFound = false,
+    retryMode: RetryMode =
+      method === "GET" || method === "PATCH" ? "safe" : "none",
   ): Promise<T> {
-    const response = await fetch(`${this.#apiUrl}${path}`, {
-      body: body === undefined ? undefined : JSON.stringify(body),
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${this.#token}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-        "user-agent": "sandcastle-queue-template",
-        "x-github-api-version": "2022-11-28",
-      },
-      method,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (allowNotFound && response.status === 404) {
-      return null as T;
+    const serializedBody =
+      body === undefined ? undefined : JSON.stringify(body);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      let response: Response;
+      try {
+        response = await fetch(`${this.#apiUrl}${path}`, {
+          body: serializedBody,
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${this.#token}`,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+            "user-agent": "sandcastle-queue-template",
+            "x-github-api-version": "2022-11-28",
+          },
+          method,
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch (error) {
+        if (
+          retryMode === "none" ||
+          attempt === 3 ||
+          !this.#transientNetworkError(error)
+        ) {
+          throw error;
+        }
+        await this.#sleep(this.#retryDelay(undefined, attempt));
+        continue;
+      }
+      if (allowNotFound && response.status === 404) {
+        return null as T;
+      }
+      const transient =
+        response.status === 429 ||
+        (response.status >= 500 && response.status <= 599);
+      if (transient && retryMode !== "none" && attempt < 3) {
+        await response.body?.cancel();
+        await this.#sleep(this.#retryDelay(response, attempt));
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error(`GitHub ${method} failed with status ${response.status}.`);
+      }
+      const source = await response.text();
+      return (source ? JSON.parse(source) : null) as T;
     }
-    if (!response.ok) {
-      throw new Error(`GitHub ${method} failed with status ${response.status}.`);
-    }
-    const source = await response.text();
-    return (source ? JSON.parse(source) : null) as T;
+    throw new Error(`GitHub ${method} retry limit was exhausted.`);
   }
 
   async addLabel(issue: number, label: string): Promise<void> {
@@ -55,6 +122,8 @@ export class RestGitHubHost implements FrontierGitHub {
       "POST",
       `/repos/${this.#repository}/issues/${issue}/labels`,
       { labels: [label] },
+      false,
+      "safe",
     );
   }
 
@@ -259,6 +328,8 @@ export class RestGitHubHost implements FrontierGitHub {
       "POST",
       `/repos/${this.#repository}/actions/workflows/sandcastle-queue.yml/dispatches`,
       payload,
+      false,
+      "dispatch",
     );
   }
 }

@@ -65,12 +65,15 @@ permissions: {}
 jobs:
   queue:
     runs-on: ${config.runner.runsOn}
+    timeout-minutes: 360
     permissions:
       actions: write
       contents: write
       issues: write
       pull-requests: write
     steps:
+      - name: Establish the Queue job hard deadline
+        run: node -e 'process.stdout.write("SANDCASTLE_JOB_HARD_DEADLINE_MS=" + (Date.now() + 350 * 60_000) + "\\n")' >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
