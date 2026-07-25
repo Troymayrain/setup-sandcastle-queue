@@ -1,0 +1,43 @@
+# PROTOTYPE CONTRACT OUTLINE — not runnable production workflow.
+name: Sandcastle Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        required: true
+        type: choice
+        options: [start, resume, continue, final-review, final-fix, final-rereview]
+      expected_head:
+        required: true
+        type: string
+      predecessor_run_id:
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: sandcastle-queue-write
+  cancel-in-progress: false
+
+jobs:
+  queue-unit:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix .sandcastle
+      - name: Process exactly one remote-fact-derived work unit
+        run: npm run queue --prefix .sandcastle
+        env:
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          # GITHUB_TOKEN is intentionally not exported to the Agent process.

@@ -1,0 +1,15 @@
+{
+  "name": "project-sandcastle-queue",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "queue": "tsx src/queue.ts"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0",
+    "tsx": "4.20.6"
+  }
+}

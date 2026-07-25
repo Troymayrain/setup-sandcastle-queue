@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "github": {
+    "baseBranch": "main",
+    "integrationBranch": "sandcastle/integration",
+    "readyLabel": "ready-for-agent",
+    "ownershipLabel": "sandcastle",
+    "runsOn": ["ubuntu-latest"]
+  },
+  "commands": {
+    "bootstrap": [],
+    "test": [
+      { "argv": ["npm", "test"] }
+    ],
+    "verification": [
+      { "argv": ["npm", "run", "typecheck"] }
+    ]
+  },
+  "models": {
+    "ticket": "claude-opus-5",
+    "finalReview": "claude-opus-5",
+    "finalFix": "claude-opus-5"
+  },
+  "execution": {
+    "hostFinalizationReserveMinutes": 15
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "issue-49-minimal-queue-template-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node prototype.mjs"
+  }
+}
