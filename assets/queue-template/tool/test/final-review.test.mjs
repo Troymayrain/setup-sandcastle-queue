@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { orchestrateFirstFinalReview } from "../dist/final-review.js";
-import { renderFinalReviewMarker } from "../dist/final-review-facts.js";
+import {
+  renderFinalFixMarker,
+  renderFinalReviewMarker,
+} from "../dist/final-review-facts.js";
 
 const integrationHead = "1".repeat(40);
 const baseHead = "2".repeat(40);
@@ -59,6 +62,9 @@ function fixture({
     async dispatchContinuation(payload) {
       events.push(["dispatch", payload]);
     },
+    async dispatchFinalFix(payload) {
+      events.push(["finalFix", payload]);
+    },
     async listIntegrationPullRequests(input) {
       events.push(["pulls", input]);
       return [{
@@ -100,7 +106,7 @@ function fixture({
       verdict,
     };
   };
-  return { boundary, events, runWorkUnit, select };
+  return { boundary, comments, events, runWorkUnit, select };
 }
 
 test("first Final Review uses a temporary latest-base merge and marks only a proven pass ready", async () => {
@@ -153,7 +159,7 @@ test("first Final Review uses a temporary latest-base merge and marks only a pro
   );
 });
 
-test("needs-fix records the immutable verdict but keeps the pull request draft", async () => {
+test("needs-fix records the immutable verdict and dispatches one exact-head Final Fix", async () => {
   const state = fixture({ verdict: "needs-fix" });
 
   const result = await orchestrateFirstFinalReview(
@@ -163,9 +169,46 @@ test("needs-fix records the immutable verdict but keeps the pull request draft",
     state.runWorkUnit,
   );
 
-  assert.equal(result.status, "needs-fix");
+  assert.equal(result.status, "final-fix-dispatched");
   assert.equal(state.events.some(([name]) => name === "marker"), true);
   assert.equal(state.events.some(([name]) => name === "ready"), false);
+  assert.deepEqual(state.events.at(-1), [
+    "finalFix",
+    {
+      inputs: {
+        expected_head: integrationHead,
+        operation: "final-fix",
+        predecessor_run_id: "9002",
+      },
+      ref: "main",
+    },
+  ]);
+});
+
+test("a prior Final Fix turns a later needs-fix review over to a human", async () => {
+  const state = fixture({ verdict: "needs-fix" });
+  state.comments.push({
+    body: renderFinalFixMarker({
+      afterHead: "3".repeat(40),
+      beforeHead: "2".repeat(40),
+      reviewRunId: "8001",
+      runId: "8002",
+      schemaVersion: 1,
+      sessionId: "prior-fix-session",
+      type: "sandcastle-final-fix",
+    }),
+    id: 70,
+  });
+
+  const result = await orchestrateFirstFinalReview(
+    options(),
+    state.boundary,
+    state.select,
+    state.runWorkUnit,
+  );
+
+  assert.equal(result.status, "needs-human-review");
+  assert.equal(state.events.some(([name]) => name === "finalFix"), false);
 });
 
 test("blocked work never finalizes and new executable work returns to processing", async () => {

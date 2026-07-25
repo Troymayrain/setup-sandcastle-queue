@@ -9,6 +9,8 @@ import {
   type ProcessingRunOperation,
 } from "./continuation.js";
 import { runWithTicketDeadline } from "./deadline.js";
+import { orchestrateFinalFix } from "./final-fix.js";
+import { orchestrateFinalRereview } from "./final-rereview.js";
 import { orchestrateFirstFinalReview } from "./final-review.js";
 import { activateAndSelectFrontier } from "./frontier.js";
 import { RestGitHubHost } from "./github-host.js";
@@ -24,7 +26,6 @@ import {
   inspectPublicationAtDeadline,
   reconcilePublication,
 } from "./reconciliation.js";
-import { executeWorkUnit, type WorkUnitRole } from "./work-unit.js";
 
 interface ToolConfig {
   commands: {
@@ -63,23 +64,10 @@ function option(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-function roleFor(operation: Operation): WorkUnitRole {
-  if (isProcessingOperation(operation)) {
-    return "ticket";
-  }
-  return operation;
-}
-
 function isProcessingOperation(
   operation: Operation,
 ): operation is "start" | "continue" | "resume" {
   return operation === "start" || operation === "continue" || operation === "resume";
-}
-
-function modelFor(role: WorkUnitRole, config: ToolConfig): string {
-  if (role === "ticket") return config.models.ticket;
-  if (role === "final-fix") return config.models.finalFix;
-  return config.models.finalReview;
 }
 
 async function readStrictConfig(repository: string): Promise<ToolConfig> {
@@ -118,6 +106,73 @@ async function main(): Promise<void> {
   if (operation === "final-review") {
     const github = new RestGitHubHost(process.env);
     const result = await orchestrateFirstFinalReview(
+      {
+        baseBranch: config.repository.baseBranch,
+        commands: config.commands,
+        environment: process.env,
+        expectedHead: option("--expected-head") ?? "",
+        integrationBranch: config.repository.integrationBranch,
+        model: config.models.finalReview,
+        predecessorRunId: option("--predecessor-run-id") ?? "",
+        promptFile: join(
+          repository,
+          ".sandcastle",
+          "prompts",
+          "final-review.md",
+        ),
+      },
+      new NodeFinalReviewHost(repository, process.env, github),
+      () =>
+        activateAndSelectFrontier(
+          github,
+          {
+            ownership: config.queue.ownershipLabel,
+            ready: config.queue.readyLabel,
+          },
+          false,
+        ),
+    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exitCode = result.status === "conflict" ? 4 : 0;
+    return;
+  }
+  if (operation === "final-fix") {
+    const github = new RestGitHubHost(process.env);
+    const result = await orchestrateFinalFix(
+      {
+        baseBranch: config.repository.baseBranch,
+        commands: config.commands,
+        environment: process.env,
+        expectedHead: option("--expected-head") ?? "",
+        integrationBranch: config.repository.integrationBranch,
+        model: config.models.finalFix,
+        predecessorRunId: option("--predecessor-run-id") ?? "",
+        promptFile: join(
+          repository,
+          ".sandcastle",
+          "prompts",
+          "final-fix.md",
+        ),
+        repository,
+      },
+      new NodeTicketHost(repository, process.env, github),
+      () =>
+        activateAndSelectFrontier(
+          github,
+          {
+            ownership: config.queue.ownershipLabel,
+            ready: config.queue.readyLabel,
+          },
+          false,
+        ),
+    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    process.exitCode = result.status === "conflict" ? 4 : 0;
+    return;
+  }
+  if (operation === "final-rereview") {
+    const github = new RestGitHubHost(process.env);
+    const result = await orchestrateFinalRereview(
       {
         baseBranch: config.repository.baseBranch,
         commands: config.commands,
@@ -247,17 +302,8 @@ async function main(): Promise<void> {
     process.exitCode = result.status === "conflict" ? 4 : 0;
     return;
   }
-  const role = roleFor(operation);
-  const promptRole = role === "final-rereview" ? "final-review" : role;
-  const promptFile = join(repository, ".sandcastle", "prompts", `${promptRole}.md`);
-  const result = await executeWorkUnit({
-    cwd: repository,
-    environment: process.env,
-    model: modelFor(role, config),
-    promptFile,
-    role,
-  });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  const unreachable: never = operation;
+  throw new Error(`Unsupported Queue operation: ${unreachable}`);
 }
 
 await main();

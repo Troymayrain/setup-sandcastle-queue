@@ -5,8 +5,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
+import type { FinalFixBoundary } from "./final-fix.js";
+import type { FinalRereviewBoundary } from "./final-rereview.js";
 import type { FinalReviewBoundary } from "./final-review.js";
-import type { FinalReviewMarker } from "./final-review-facts.js";
+import type {
+  FinalFixMarker,
+  FinalRereviewMarker,
+  FinalReviewMarker,
+} from "./final-review-facts.js";
 import { RestGitHubHost } from "./github-host.js";
 import type {
   DraftPullRequest,
@@ -63,7 +69,7 @@ async function executeGit(
   }
 }
 
-export class NodeTicketHost implements TicketHostBoundary {
+export class NodeTicketHost implements TicketHostBoundary, FinalFixBoundary {
   readonly #github: RestGitHubHost;
   readonly #localGitEnvironment: NodeJS.ProcessEnv;
   readonly #networkGitEnvironment: NodeJS.ProcessEnv;
@@ -169,6 +175,35 @@ export class NodeTicketHost implements TicketHostBoundary {
     return this.#github.createPublicationMarker(issue, marker);
   }
 
+  createFinalFixMarker(
+    pullRequest: number,
+    marker: FinalFixMarker,
+  ): Promise<{ id: number }> {
+    return this.#github.createFinalFixMarker(pullRequest, marker);
+  }
+
+  dispatchContinuation(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "continue";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    return this.#github.dispatchContinuation(payload);
+  }
+
+  dispatchFinalRereview(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-rereview";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    return this.#github.dispatchFinalRereview(payload);
+  }
+
   async isClean(): Promise<boolean> {
     return (await this.#git(["status", "--porcelain=v1", "--untracked-files=all"])) === "";
   }
@@ -178,6 +213,12 @@ export class NodeTicketHost implements TicketHostBoundary {
     head: string;
   }): Promise<IntegrationPullRequest[]> {
     return this.#github.listIntegrationPullRequests(input);
+  }
+
+  listIssueComments(
+    issue: number,
+  ): Promise<Array<{ body: string; id: number }>> {
+    return this.#github.listIssueComments(issue);
   }
 
   localHead(): Promise<string> {
@@ -228,7 +269,9 @@ export class NodeTicketHost implements TicketHostBoundary {
   }
 }
 
-export class NodeFinalReviewHost implements FinalReviewBoundary {
+export class NodeFinalReviewHost
+  implements FinalReviewBoundary, FinalRereviewBoundary
+{
   readonly #github: RestGitHubHost;
   readonly #localGitEnvironment: NodeJS.ProcessEnv;
   readonly #networkGitEnvironment: NodeJS.ProcessEnv;
@@ -270,6 +313,13 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
     marker: FinalReviewMarker,
   ): Promise<{ id: number }> {
     return this.#github.createFinalReviewMarker(pullRequest, marker);
+  }
+
+  createFinalRereviewMarker(
+    pullRequest: number,
+    marker: FinalRereviewMarker,
+  ): Promise<{ id: number }> {
+    return this.#github.createFinalRereviewMarker(pullRequest, marker);
   }
 
   async createTemporaryMerge(input: {
@@ -390,6 +440,17 @@ export class NodeFinalReviewHost implements FinalReviewBoundary {
     ref: string;
   }): Promise<void> {
     return this.#github.dispatchContinuation(payload);
+  }
+
+  dispatchFinalFix(payload: {
+    inputs: {
+      expected_head: string;
+      operation: "final-fix";
+      predecessor_run_id: string;
+    };
+    ref: string;
+  }): Promise<void> {
+    return this.#github.dispatchFinalFix(payload);
   }
 
   listIntegrationPullRequests(input: {

@@ -51,3 +51,11 @@ _Avoid_: Ticket review, Agent self-approval, automatic merge
 **Final Review Marker**:
 写入唯一 Integration PR 的不可变远端事实，绑定完整 Integration HEAD、base HEAD、verdict 与 run ID；只有可见且唯一的 `pass` marker 才允许把 draft PR 标记为 ready for human review。
 _Avoid_: mutable review state, approval, merge authorization
+
+**Final Fix**:
+由 first Final Review 的 `needs-fix` marker 对精确 Integration HEAD 授权的唯一自动修复；使用 fresh Sandcastle session 产生一个新 Integration HEAD，发布后不再允许第二次自动修复。
+_Avoid_: retry Agent, unbounded repair loop, stale authorization
+
+**Final Rereview**:
+Final Fix 发布后在新 run、fresh read-only session 与最新 base 临时合并上执行的独立复审；`needs-fix` 只交还人工，不再授权 Final Fix。
+_Avoid_: fixing Agent self-approval, second automatic fix

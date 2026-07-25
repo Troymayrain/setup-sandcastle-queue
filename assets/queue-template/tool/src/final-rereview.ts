@@ -1,11 +1,12 @@
 import { withoutExecutionCredentials } from "./credential-environment.js";
-import type { FrontierResult } from "./frontier.js";
 import {
   parseFinalFixMarker,
-  parseFinalReviewMarker,
-  renderFinalReviewMarker,
-  type FinalReviewMarker,
+  parseFinalRereviewMarker,
+  renderFinalRereviewMarker,
+  type FinalFixMarker,
+  type FinalRereviewMarker,
 } from "./final-review-facts.js";
+import type { FrontierResult } from "./frontier.js";
 import type { IntegrationPullRequest } from "./integration-pull-request.js";
 import type { CommandSpec } from "./processing-run.js";
 import {
@@ -25,15 +26,15 @@ interface TemporaryMerge {
   unchanged(): Promise<boolean>;
 }
 
-interface FinalReviewComment {
+interface FinalizationComment {
   body: string;
   id: number;
 }
 
-export interface FinalReviewBoundary {
-  createFinalReviewMarker(
+export interface FinalRereviewBoundary {
+  createFinalRereviewMarker(
     pullRequest: number,
-    marker: FinalReviewMarker,
+    marker: FinalRereviewMarker,
   ): Promise<{ id: number }>;
   createTemporaryMerge(input: {
     baseBranch: string;
@@ -48,19 +49,11 @@ export interface FinalReviewBoundary {
     };
     ref: string;
   }): Promise<void>;
-  dispatchFinalFix(payload: {
-    inputs: {
-      expected_head: string;
-      operation: "final-fix";
-      predecessor_run_id: string;
-    };
-    ref: string;
-  }): Promise<void>;
   listIntegrationPullRequests(input: {
     base: string;
     head: string;
   }): Promise<IntegrationPullRequest[]>;
-  listIssueComments(issue: number): Promise<FinalReviewComment[]>;
+  listIssueComments(issue: number): Promise<FinalizationComment[]>;
   markPullRequestReady(nodeId: string): Promise<void>;
   remoteHead(branch: string): Promise<string | null>;
   runCommand(
@@ -70,7 +63,7 @@ export interface FinalReviewBoundary {
   ): Promise<void>;
 }
 
-export interface FirstFinalReviewOptions {
+export interface FinalRereviewOptions {
   baseBranch: string;
   commands: {
     bootstrap: CommandSpec[];
@@ -85,11 +78,11 @@ export interface FirstFinalReviewOptions {
   promptFile: string;
 }
 
-export type FirstFinalReviewResult =
+export type FinalRereviewResult =
   | {
       actualHead: string | null;
       expectedHead: string;
-      status: "stale-final-review";
+      status: "stale-final-rereview";
     }
   | { reason: string; status: "conflict" }
   | { reason: "assigned" | "blocked"; status: "waiting" }
@@ -100,24 +93,57 @@ export type FirstFinalReviewResult =
       markerCommentId: number;
       pullRequest: number;
       sessionId: string;
-      status:
-        | "final-fix-dispatched"
-        | "needs-human-review"
-        | "ready-for-human-review";
+      status: "needs-human-review" | "ready-for-human-review";
       verdict: "needs-fix" | "pass";
     };
 
 type WorkUnitExecutor = (options: WorkUnitOptions) => Promise<WorkUnitResult>;
 
-function conflict(reason: string): FirstFinalReviewResult {
+function conflict(reason: string): FinalRereviewResult {
   return { reason, status: "conflict" };
 }
 
-async function leaveFinalizationForFrontier(
+function markersFrom(comments: FinalizationComment[]): {
+  fixes: Array<{ id: number; marker: FinalFixMarker }>;
+  rereviews: Array<{ id: number; marker: FinalRereviewMarker }>;
+} | null {
+  if (
+    comments.some(
+      ({ body, id }) =>
+        typeof body !== "string" || !Number.isSafeInteger(id) || id <= 0,
+    ) ||
+    new Set(comments.map(({ id }) => id)).size !== comments.length
+  ) {
+    return null;
+  }
+  try {
+    return {
+      fixes: comments
+        .map(({ body, id }) => ({ id, marker: parseFinalFixMarker(body) }))
+        .filter(
+          (value): value is { id: number; marker: FinalFixMarker } =>
+            value.marker !== null,
+        ),
+      rereviews: comments
+        .map(({ body, id }) => ({
+          id,
+          marker: parseFinalRereviewMarker(body),
+        }))
+        .filter(
+          (value): value is { id: number; marker: FinalRereviewMarker } =>
+            value.marker !== null,
+        ),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function leaveFinalization(
   frontier: FrontierResult,
-  options: FirstFinalReviewOptions,
-  boundary: FinalReviewBoundary,
-): Promise<FirstFinalReviewResult | null> {
+  options: FinalRereviewOptions,
+  boundary: FinalRereviewBoundary,
+): Promise<FinalRereviewResult | null> {
   if (frontier.status === "conflict") return frontier;
   if (frontier.status === "ready") {
     await boundary.dispatchContinuation({
@@ -135,55 +161,10 @@ async function leaveFinalizationForFrontier(
     : { reason: frontier.reason, status: "waiting" };
 }
 
-function inspectFinalReviewMarker(
-  comments: FinalReviewComment[],
-  expected: FinalReviewMarker,
-):
-  | { status: "conflict" }
-  | { status: "none" }
-  | { id: number; status: "exact" } {
-  if (
-    comments.some(
-      ({ body, id }) =>
-        typeof body !== "string" || !Number.isSafeInteger(id) || id <= 0,
-    ) ||
-    new Set(comments.map(({ id }) => id)).size !== comments.length
-  ) {
-    return { status: "conflict" };
-  }
-  let markers: Array<{ id: number; marker: FinalReviewMarker }>;
-  try {
-    markers = comments
-      .map(({ body, id }) => ({ id, marker: parseFinalReviewMarker(body) }))
-      .filter(
-        (value): value is { id: number; marker: FinalReviewMarker } =>
-          value.marker !== null,
-      );
-  } catch {
-    return { status: "conflict" };
-  }
-  if (markers.length === 0) return { status: "none" };
-  const exact = markers.filter(
-    ({ marker }) =>
-      renderFinalReviewMarker(marker) === renderFinalReviewMarker(expected),
-  );
-  if (exact.length === 1) {
-    return { id: exact[0]!.id, status: "exact" };
-  }
-  if (exact.length > 1) return { status: "conflict" };
-  return markers.some(
-    ({ marker }) =>
-      marker.integrationHead === expected.integrationHead ||
-      marker.runId === expected.runId,
-  )
-    ? { status: "conflict" }
-    : { status: "none" };
-}
-
 async function runCommands(
   groups: CommandSpec[][],
   path: string,
-  boundary: FinalReviewBoundary,
+  boundary: FinalRereviewBoundary,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
   for (const commands of groups) {
@@ -193,92 +174,34 @@ async function runCommands(
   }
 }
 
-export async function orchestrateFirstFinalReview(
-  options: FirstFinalReviewOptions,
-  boundary: FinalReviewBoundary,
+export async function orchestrateFinalRereview(
+  options: FinalRereviewOptions,
+  boundary: FinalRereviewBoundary,
   select: () => Promise<FrontierResult>,
   runWorkUnit: WorkUnitExecutor = executeWorkUnit,
-): Promise<FirstFinalReviewResult> {
+): Promise<FinalRereviewResult> {
   const runId = options.environment.GITHUB_RUN_ID;
   if (
     !objectIdPattern.test(options.expectedHead) ||
     !runIdPattern.test(runId ?? "") ||
     !runIdPattern.test(options.predecessorRunId)
   ) {
-    return conflict("invalid-final-review-binding");
+    return conflict("invalid-final-rereview-binding");
   }
-
   const actualHead = await boundary.remoteHead(options.integrationBranch);
   if (actualHead !== options.expectedHead) {
     return {
       actualHead,
       expectedHead: options.expectedHead,
-      status: "stale-final-review",
+      status: "stale-final-rereview",
     };
   }
-  const stopped = await leaveFinalizationForFrontier(
+  const stopped = await leaveFinalization(
     await select(),
     options,
     boundary,
   );
   if (stopped) return stopped;
-
-  const temporary = await boundary.createTemporaryMerge({
-    baseBranch: options.baseBranch,
-    expectedIntegrationHead: options.expectedHead,
-    integrationBranch: options.integrationBranch,
-  });
-  let review: WorkUnitResult;
-  let temporaryUnchanged = false;
-  try {
-    await runCommands(
-      [
-        options.commands.bootstrap,
-        options.commands.test,
-        options.commands.verification,
-      ],
-      temporary.path,
-      boundary,
-      withoutExecutionCredentials(options.environment),
-    );
-    review = await runWorkUnit({
-      cwd: temporary.path,
-      environment: options.environment,
-      model: options.model,
-      promptFile: options.promptFile,
-      role: "final-review",
-    });
-    temporaryUnchanged = await temporary.unchanged();
-  } finally {
-    await temporary.remove();
-  }
-  if (
-    temporary.integrationHead !== options.expectedHead ||
-    !objectIdPattern.test(temporary.baseHead) ||
-    review.role !== "final-review" ||
-    review.commits.length !== 0 ||
-    !temporaryUnchanged ||
-    (review.verdict !== "pass" && review.verdict !== "needs-fix")
-  ) {
-    throw new Error("Final Review did not produce a read-only exact verdict.");
-  }
-
-  const [visibleIntegrationHead, visibleBaseHead] = await Promise.all([
-    boundary.remoteHead(options.integrationBranch),
-    boundary.remoteHead(options.baseBranch),
-  ]);
-  if (
-    visibleIntegrationHead !== options.expectedHead ||
-    visibleBaseHead !== temporary.baseHead
-  ) {
-    return conflict("final-review-head-changed");
-  }
-  const finalBoundary = await leaveFinalizationForFrontier(
-    await select(),
-    options,
-    boundary,
-  );
-  if (finalBoundary) return finalBoundary;
 
   const pullRequests = await boundary.listIntegrationPullRequests({
     base: options.baseBranch,
@@ -295,58 +218,113 @@ export async function orchestrateFirstFinalReview(
   ) {
     return conflict("unique-draft-integration-pull-request-required");
   }
-  const marker: FinalReviewMarker = {
+  const existing = markersFrom(
+    await boundary.listIssueComments(pullRequest.number),
+  );
+  const authorization = existing?.fixes.filter(
+    ({ marker }) =>
+      marker.afterHead === options.expectedHead &&
+      marker.runId === options.predecessorRunId,
+  );
+  if (!existing || existing.rereviews.length > 0 || authorization?.length !== 1) {
+    return conflict("final-rereview-authorization-unprovable-or-consumed");
+  }
+  const fixMarker = authorization[0]!.marker;
+
+  const temporary = await boundary.createTemporaryMerge({
+    baseBranch: options.baseBranch,
+    expectedIntegrationHead: options.expectedHead,
+    integrationBranch: options.integrationBranch,
+  });
+  let workUnit: WorkUnitResult;
+  let unchanged = false;
+  try {
+    await runCommands(
+      [
+        options.commands.bootstrap,
+        options.commands.test,
+        options.commands.verification,
+      ],
+      temporary.path,
+      boundary,
+      withoutExecutionCredentials(options.environment),
+    );
+    workUnit = await runWorkUnit({
+      cwd: temporary.path,
+      environment: options.environment,
+      model: options.model,
+      promptFile: options.promptFile,
+      role: "final-rereview",
+    });
+    unchanged = await temporary.unchanged();
+  } finally {
+    await temporary.remove();
+  }
+  if (
+    temporary.integrationHead !== options.expectedHead ||
+    !objectIdPattern.test(temporary.baseHead) ||
+    workUnit.role !== "final-rereview" ||
+    workUnit.sessionId === fixMarker.sessionId ||
+    workUnit.commits.length !== 0 ||
+    !unchanged ||
+    (workUnit.verdict !== "pass" && workUnit.verdict !== "needs-fix")
+  ) {
+    throw new Error(
+      "Final Rereview must be an independent read-only exact verdict.",
+    );
+  }
+
+  const [visibleIntegrationHead, visibleBaseHead] = await Promise.all([
+    boundary.remoteHead(options.integrationBranch),
+    boundary.remoteHead(options.baseBranch),
+  ]);
+  if (
+    visibleIntegrationHead !== options.expectedHead ||
+    visibleBaseHead !== temporary.baseHead
+  ) {
+    return conflict("final-rereview-head-changed");
+  }
+  const finalBoundary = await leaveFinalization(
+    await select(),
+    options,
+    boundary,
+  );
+  if (finalBoundary) return finalBoundary;
+
+  const marker: FinalRereviewMarker = {
     baseHead: temporary.baseHead,
+    fixRunId: options.predecessorRunId,
     integrationHead: options.expectedHead,
     runId: runId!,
     schemaVersion: 1,
-    type: "sandcastle-final-review",
-    verdict: review.verdict,
+    type: "sandcastle-final-rereview",
+    verdict: workUnit.verdict,
   };
-  let visibleComments = await boundary.listIssueComments(pullRequest.number);
-  let visibleMarker = inspectFinalReviewMarker(visibleComments, marker);
-  if (visibleMarker.status === "none") {
-    await boundary.createFinalReviewMarker(pullRequest.number, marker);
-    visibleComments = await boundary.listIssueComments(pullRequest.number);
-    visibleMarker = inspectFinalReviewMarker(visibleComments, marker);
+  await boundary.createFinalRereviewMarker(pullRequest.number, marker);
+  const visibleMarkers = markersFrom(
+    await boundary.listIssueComments(pullRequest.number),
+  );
+  const visible = visibleMarkers?.rereviews.filter(
+    ({ marker: candidate }) =>
+      renderFinalRereviewMarker(candidate) ===
+      renderFinalRereviewMarker(marker),
+  );
+  if (!visibleMarkers || visible?.length !== 1) {
+    return conflict("final-rereview-marker-not-unique-or-visible");
   }
-  if (visibleMarker.status !== "exact") {
-    return conflict("final-review-marker-not-unique-or-visible");
-  }
-  let priorFix = false;
-  if (review.verdict === "pass") {
+  if (workUnit.verdict === "pass") {
     await boundary.markPullRequestReady(pullRequest.nodeId);
-  } else {
-    try {
-      priorFix = visibleComments.some(
-        ({ body }) => parseFinalFixMarker(body) !== null,
-      );
-    } catch {
-      return conflict("final-fix-history-unprovable");
-    }
-    if (!priorFix) {
-      await boundary.dispatchFinalFix({
-        inputs: {
-          expected_head: options.expectedHead,
-          operation: "final-fix",
-          predecessor_run_id: runId!,
-        },
-        ref: options.baseBranch,
-      });
-    }
   }
   return {
     baseHead: temporary.baseHead,
     integrationHead: options.expectedHead,
-    markerCommentId: visibleMarker.id,
+    markerCommentId: visible![0]!.id,
     pullRequest: pullRequest.number,
-    sessionId: review.sessionId,
+    sessionId: workUnit.sessionId,
     status:
-      review.verdict === "pass"
+      workUnit.verdict === "pass"
         ? "ready-for-human-review"
-        : priorFix
-          ? "needs-human-review"
-          : "final-fix-dispatched",
-    verdict: review.verdict,
+        : "needs-human-review",
+    verdict: workUnit.verdict,
   };
 }
