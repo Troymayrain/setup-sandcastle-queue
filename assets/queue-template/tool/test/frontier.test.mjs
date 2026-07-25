@@ -96,11 +96,11 @@ test("assigned or native-blocked owned Tickets wait and contradictory facts fail
   const waiting = fakeClient([
     issue(1, {
       assignees: [{ login: "human" }],
-      labels: [{ name: "sandcastle" }],
+      labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
     }),
     issue(2, {
       issue_dependencies_summary: { blocked_by: 1 },
-      labels: [{ name: "sandcastle" }],
+      labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
     }),
   ]);
   assert.deepEqual(
@@ -115,7 +115,7 @@ test("assigned or native-blocked owned Tickets wait and contradictory facts fail
   const conflict = fakeClient([
     issue(3, {
       issue_dependencies_summary: undefined,
-      labels: [{ name: "sandcastle" }],
+      labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
     }),
   ]);
   assert.equal(
@@ -141,5 +141,48 @@ test("an empty manual activation waits without any branch or pull-request bounda
   assert.equal(
     client.calls.some(([name]) => /branch|pull/iu.test(name)),
     false,
+  );
+});
+
+test("fresh reads catch concurrent ownership and missing activation facts fail closed", async () => {
+  const current = issue(4, {
+    labels: [{ name: "ready-for-agent" }, { name: "sandcastle" }],
+  });
+  const concurrent = {
+    addLabel: async () => {},
+    getIssue: async () => structuredClone(current),
+    listOpenIssues: async (page) =>
+      page === 1
+        ? [
+            {
+              ...structuredClone(current),
+              labels: [{ name: "ready-for-agent" }],
+            },
+          ]
+        : [],
+  };
+  assert.equal(
+    (
+      await activateAndSelectFrontier(
+        concurrent,
+        { ownership: "sandcastle", ready: "ready-for-agent" },
+        false,
+      )
+    ).status,
+    "ready",
+  );
+
+  const missingFacts = fakeClient([
+    issue(5, { issue_dependencies_summary: undefined }),
+  ]);
+  assert.equal(
+    (
+      await activateAndSelectFrontier(
+        missingFacts,
+        { ownership: "sandcastle", ready: "ready-for-agent" },
+        true,
+      )
+    ).status,
+    "conflict",
   );
 });

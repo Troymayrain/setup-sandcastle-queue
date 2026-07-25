@@ -32,10 +32,16 @@ function option(name: string): string | undefined {
 }
 
 function roleFor(operation: Operation): WorkUnitRole {
-  if (operation === "start" || operation === "continue" || operation === "resume") {
+  if (isProcessingOperation(operation)) {
     return "ticket";
   }
   return operation;
+}
+
+function isProcessingOperation(
+  operation: Operation,
+): operation is "start" | "continue" | "resume" {
+  return operation === "start" || operation === "continue" || operation === "resume";
 }
 
 function modelFor(role: WorkUnitRole, config: ToolConfig): string {
@@ -77,7 +83,7 @@ async function main(): Promise<void> {
   }
   const repository = resolve(option("--repository") ?? join(process.cwd(), "../.."));
   const config = await readStrictConfig(repository);
-  if (operation === "start" || operation === "continue" || operation === "resume") {
+  if (isProcessingOperation(operation)) {
     const result = await activateAndSelectFrontier(
       new RestFrontierGitHub(process.env),
       {

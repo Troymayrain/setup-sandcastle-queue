@@ -82,10 +82,18 @@ export async function activateAndSelectFrontier(
   const activated: number[] = [];
   if (activate) {
     for (const snapshot of listed.sort((left, right) => left.number - right.number)) {
+      if (snapshot.pull_request !== undefined || !hasLabel(snapshot, labels.ready)) {
+        continue;
+      }
       const issue = await client.getIssue(snapshot.number);
+      if (issue.number !== snapshot.number || !structurallyComplete(issue)) {
+        return {
+          activated,
+          reason: `missing-activation-facts-${snapshot.number}`,
+          status: "conflict",
+        };
+      }
       if (
-        issue.number !== snapshot.number ||
-        !structurallyComplete(issue) ||
         !hasLabel(issue, labels.ready) ||
         (issue.assignees?.length ?? 0) > 0 ||
         !validateTicketContract(issue.body)
@@ -104,21 +112,29 @@ export async function activateAndSelectFrontier(
   }
 
   const refreshedList = await allOpenIssues(client);
-  const ownedNumbers = refreshedList
-    .filter((issue) => hasLabel(issue, labels.ownership))
-    .map(({ number }) => number)
-    .sort((left, right) => left - right);
   let waitingReason: "assigned" | "blocked" | "empty" = "empty";
   const executable: number[] = [];
-  for (const number of ownedNumbers) {
-    const issue = await client.getIssue(number);
+  for (const snapshot of refreshedList.sort((left, right) => left.number - right.number)) {
+    const issue = await client.getIssue(snapshot.number);
+    if (issue.number !== snapshot.number || !Array.isArray(issue.labels)) {
+      return {
+        activated,
+        reason: `contradictory-issue-${snapshot.number}`,
+        status: "conflict",
+      };
+    }
+    if (!hasLabel(issue, labels.ownership)) continue;
     if (
-      issue.number !== number ||
       !structurallyComplete(issue) ||
       !hasLabel(issue, labels.ownership) ||
+      !hasLabel(issue, labels.ready) ||
       !validateTicketContract(issue.body)
     ) {
-      return { activated, reason: `contradictory-issue-${number}`, status: "conflict" };
+      return {
+        activated,
+        reason: `contradictory-issue-${snapshot.number}`,
+        status: "conflict",
+      };
     }
     if ((issue.assignees?.length ?? 0) > 0) {
       waitingReason = "assigned";
@@ -128,7 +144,7 @@ export async function activateAndSelectFrontier(
       waitingReason = "blocked";
       continue;
     }
-    executable.push(number);
+    executable.push(snapshot.number);
   }
   if (executable[0] !== undefined) {
     return { activated, status: "ready", ticket: executable[0] };
