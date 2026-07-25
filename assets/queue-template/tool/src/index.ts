@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import {
   createQueueAuditRecord,
+  operationAndAuditFailure,
   writeQueueAuditEvidence,
 } from "./audit.js";
 import { RestGitHubHost } from "./github-host.js";
@@ -114,12 +115,35 @@ async function main(): Promise<
 }
 
 const startedAt = Date.now();
+let completed: Awaited<ReturnType<typeof main>>;
 try {
-  const completed = await main();
-  if (completed) {
+  completed = await main();
+} catch (operationError) {
+  const operation = requestedOperation();
+  if (operation) {
+    try {
+      await writeQueueAuditEvidence(
+        createQueueAuditRecord({
+          durationMs: Date.now() - startedAt,
+          environment: process.env,
+          expectedHead: option("--expected-head"),
+          operation,
+          result: { status: "failure" },
+          runId: process.env.GITHUB_RUN_ID ?? "",
+        }),
+        process.env,
+      );
+    } catch (auditError) {
+      throw operationAndAuditFailure(operationError, auditError);
+    }
+  }
+  throw operationError;
+}
+if (completed) {
     await writeQueueAuditEvidence(
       createQueueAuditRecord({
         durationMs: Date.now() - startedAt,
+        environment: process.env,
         expectedHead: completed.expectedHead,
         operation: completed.operation,
         result: completed.result,
@@ -127,20 +151,4 @@ try {
       }),
       process.env,
     );
-  }
-} catch (error) {
-  const operation = requestedOperation();
-  if (operation) {
-    await writeQueueAuditEvidence(
-      createQueueAuditRecord({
-        durationMs: Date.now() - startedAt,
-        expectedHead: option("--expected-head"),
-        operation,
-        result: { status: "failure" },
-        runId: process.env.GITHUB_RUN_ID ?? "",
-      }),
-      process.env,
-    );
-  }
-  throw error;
 }

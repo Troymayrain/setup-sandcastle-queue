@@ -48,33 +48,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function objectId(value: unknown): string | undefined {
-  return typeof value === "string" && objectIdPattern.test(value)
+function sensitiveValues(environment: NodeJS.ProcessEnv): Set<string> {
+  return new Set(
+    Object.entries(environment)
+      .filter(
+        ([name, value]) =>
+          value &&
+          /(?:AUTH_TOKEN|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/u.test(
+            name,
+          ),
+      )
+      .map(([, value]) => value!),
+  );
+}
+
+function objectId(
+  value: unknown,
+  sensitive: ReadonlySet<string>,
+): string | undefined {
+  return typeof value === "string" &&
+    objectIdPattern.test(value) &&
+    !sensitive.has(value)
     ? value
     : undefined;
 }
 
-function safeIdentifier(value: unknown): string | undefined {
-  return typeof value === "string" && safeIdentifierPattern.test(value)
+function safeIdentifier(
+  value: unknown,
+  sensitive: ReadonlySet<string>,
+): string | undefined {
+  return typeof value === "string" &&
+    safeIdentifierPattern.test(value) &&
+    !sensitive.has(value)
     ? value
     : undefined;
 }
 
 export function createQueueAuditRecord(input: {
   durationMs: number;
+  environment: NodeJS.ProcessEnv;
   expectedHead?: string;
   operation: WorkflowHostOperation;
   result: unknown;
   runId: string;
 }): QueueAuditRecord {
   const result = isRecord(input.result) ? input.result : {};
-  const runId = runIdPattern.test(input.runId) ? input.runId : "unknown";
+  const sensitive = sensitiveValues(input.environment);
+  const runId =
+    runIdPattern.test(input.runId) && !sensitive.has(input.runId)
+      ? input.runId
+      : "unknown";
   const durationMs =
     Number.isFinite(input.durationMs) && input.durationMs >= 0
       ? Math.floor(input.durationMs)
       : 0;
   const status =
-    typeof result.status === "string" && auditStatuses.has(result.status)
+    typeof result.status === "string" &&
+    auditStatuses.has(result.status) &&
+    !sensitive.has(result.status)
       ? result.status
       : "failure";
   const ticket =
@@ -88,28 +119,39 @@ export function createQueueAuditRecord(input: {
     schemaVersion: 1,
     status,
     ...(ticket === undefined ? {} : { ticket }),
-    ...(safeIdentifier(result.sessionId) === undefined
+    ...(safeIdentifier(result.sessionId, sensitive) === undefined
       ? {}
-      : { sessionId: safeIdentifier(result.sessionId) }),
-    ...(objectId(input.expectedHead) === undefined
+      : { sessionId: safeIdentifier(result.sessionId, sensitive) }),
+    ...(objectId(input.expectedHead, sensitive) === undefined
       ? {}
-      : { expectedHead: objectId(input.expectedHead) }),
-    ...(objectId(result.beforeHead) === undefined
+      : { expectedHead: objectId(input.expectedHead, sensitive) }),
+    ...(objectId(result.beforeHead, sensitive) === undefined
       ? {}
-      : { beforeHead: objectId(result.beforeHead) }),
-    ...(objectId(result.afterHead) === undefined
+      : { beforeHead: objectId(result.beforeHead, sensitive) }),
+    ...(objectId(result.afterHead, sensitive) === undefined
       ? {}
-      : { afterHead: objectId(result.afterHead) }),
-    ...(objectId(result.completionCommit) === undefined
+      : { afterHead: objectId(result.afterHead, sensitive) }),
+    ...(objectId(result.completionCommit, sensitive) === undefined
       ? {}
-      : { completionCommit: objectId(result.completionCommit) }),
-    ...(objectId(result.integrationHead) === undefined
+      : { completionCommit: objectId(result.completionCommit, sensitive) }),
+    ...(objectId(result.integrationHead, sensitive) === undefined
       ? {}
-      : { integrationHead: objectId(result.integrationHead) }),
-    ...(objectId(result.baseHead) === undefined
+      : { integrationHead: objectId(result.integrationHead, sensitive) }),
+    ...(objectId(result.baseHead, sensitive) === undefined
       ? {}
-      : { baseHead: objectId(result.baseHead) }),
+      : { baseHead: objectId(result.baseHead, sensitive) }),
   };
+}
+
+export function operationAndAuditFailure(
+  operationError: unknown,
+  auditError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [operationError, auditError],
+    "Queue operation failed and audit evidence could not be written.",
+    { cause: operationError },
+  );
 }
 
 export async function writeQueueAuditEvidence(

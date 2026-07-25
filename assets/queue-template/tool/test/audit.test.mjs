@@ -10,6 +10,7 @@ import test from "node:test";
 
 import {
   createQueueAuditRecord,
+  operationAndAuditFailure,
   writeQueueAuditEvidence,
 } from "../dist/audit.js";
 
@@ -22,6 +23,10 @@ test("audit artifact and Job Summary contain only allowlisted redacted fields", 
   const summary = join(root, "summary.md");
   const record = createQueueAuditRecord({
     durationMs: 123.9,
+    environment: {
+      ANTHROPIC_AUTH_TOKEN: secret,
+      GITHUB_TOKEN: "github-secret",
+    },
     expectedHead: head,
     operation: "continue",
     result: {
@@ -78,6 +83,9 @@ test("audit artifact and Job Summary contain only allowlisted redacted fields", 
 test("failure evidence never retains an exception or arbitrary result fields", () => {
   const record = createQueueAuditRecord({
     durationMs: Number.NaN,
+    environment: {
+      ANTHROPIC_AUTH_TOKEN: secret,
+    },
     operation: "start",
     result: {
       error: new Error(secret),
@@ -95,4 +103,44 @@ test("failure evidence never retains an exception or arbitrary result fields", (
     status: "failure",
   });
   assert.equal(JSON.stringify(record).includes(secret), false);
+});
+
+test("allowlisted identifiers equal to secrets are removed before serialization", () => {
+  const record = createQueueAuditRecord({
+    durationMs: 1,
+    environment: {
+      ANTHROPIC_AUTH_TOKEN: secret,
+    },
+    operation: "continue",
+    result: {
+      sessionId: secret,
+      status: "continued",
+    },
+    runId: "9002",
+  });
+
+  assert.equal(record.sessionId, undefined);
+  assert.equal(JSON.stringify(record).includes(secret), false);
+});
+
+test("audit failures preserve an earlier operation error as the cause", async () => {
+  const operationError = new Error("operation failed");
+  const auditError = new Error("audit failed");
+  const combined = operationAndAuditFailure(operationError, auditError);
+
+  assert.equal(combined.cause, operationError);
+  assert.deepEqual(combined.errors, [operationError, auditError]);
+  await assert.rejects(
+    writeQueueAuditEvidence(
+      createQueueAuditRecord({
+        durationMs: 1,
+        environment: {},
+        operation: "start",
+        result: { status: "waiting" },
+        runId: "9003",
+      }),
+      { SANDCASTLE_AUDIT_PATH: "relative-audit.json" },
+    ),
+    /must be absolute/u,
+  );
 });
