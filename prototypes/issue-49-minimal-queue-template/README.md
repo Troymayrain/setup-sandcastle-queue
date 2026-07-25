@@ -42,5 +42,5 @@ template/
 
 1. 看 `template/.sandcastle/queue.config.json`：确认只有仓库差异可配置。
 2. 看 `template/.sandcastle/src/queue.ts`：确认 Queue Template 只编排上游 `run()`，不实现 runtime。
-3. 看 `template/.github/workflows/sandcastle-queue.yml`：确认宿主拥有 GitHub 权限，Agent 不获得 GitHub token。
+3. 看 `template/.github/workflows/sandcastle-queue.yml`：确认 `GITHUB_TOKEN` 只出现在 Agent 前后的宿主步骤，Agent step 只获得 Provider 凭据。
 4. 运行 TUI：按 `d` 开始，按 `t` 模拟一票成功，按 `e` 模拟有更多票的接力；清空后用 `r` / `f` / `p` 走 final 阶段。任意阶段按 `w` 查看等待，按 `x` 查看 fail-closed。

@@ -35,9 +35,17 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --prefix .sandcastle
-      - name: Process exactly one remote-fact-derived work unit
+      - name: Resolve one work unit from GitHub remote facts
+        run: node .sandcastle/src/host.mjs prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Run the credentialless Agent work unit
         run: npm run queue --prefix .sandcastle
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
-          # GITHUB_TOKEN is intentionally not exported to the Agent process.
+      - name: Publish and dispatch the next bounded run
+        if: always()
+        run: node .sandcastle/src/host.mjs finalize
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
