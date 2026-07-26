@@ -15,6 +15,7 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   const promptFile = join(cwd, "prompt.md");
   writeFileSync(promptFile, "work\n");
   const observed = [];
+  const results = [];
   const rawPaths = [];
   let nextSession = 1;
   const boundary = {
@@ -36,6 +37,7 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
         branch: "sandcastle/integration",
         commits: review ? [] : [{ sha: `${nextSession}`.padStart(40, "a") }],
         iterations: [{ sessionId: `session-${nextSession++}` }],
+        preservedWorktreePath: review ? undefined : "/worktree/preserved",
         stdout: review ? "pass" : "complete",
       };
     },
@@ -47,10 +49,10 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   };
 
   for (const role of ["ticket", "final-review", "final-fix", "final-rereview"]) {
-    await executeWorkUnit(
+    results.push(await executeWorkUnit(
       { cwd, environment, model: `${role}-model`, promptFile, role },
       boundary,
-    );
+    ));
   }
 
   assert.equal(observed.length, 4);
@@ -73,6 +75,8 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   }
   assert.equal(observed[1].agent.options.permissionMode, "plan");
   assert.equal(observed[3].agent.options.permissionMode, "plan");
+  assert.equal(results[0].preservedWorktreePath, "/worktree/preserved");
+  assert.equal("preservedWorktreePath" in results[1], false);
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
   assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {
     jsonLines: 1,

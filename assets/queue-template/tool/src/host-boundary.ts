@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { withoutExecutionCredentials } from "./credential-environment.js";
@@ -107,6 +107,115 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
 
   async #assertBranchName(branch: string): Promise<void> {
     await this.#git(["check-ref-format", `refs/heads/${branch}`]);
+  }
+
+  async adoptFinalFixChanges(input: {
+    branch: string;
+    expectedHead: string;
+    preservedWorktreePath: string;
+  }): Promise<string> {
+    await this.#assertBranchName(input.branch);
+    const [repository, worktrees, candidate] = await Promise.all([
+      realpath(this.#repository),
+      realpath(join(this.#repository, ".sandcastle", "worktrees")),
+      realpath(input.preservedWorktreePath),
+    ]);
+    const candidateRelative = relative(worktrees, candidate);
+    if (
+      candidateRelative.length === 0 ||
+      candidateRelative.startsWith(`..${sep}`) ||
+      candidateRelative === ".." ||
+      isAbsolute(candidateRelative) ||
+      relative(repository, candidate).startsWith("..")
+    ) {
+      throw new Error("Preserved Final Fix worktree is outside the Queue boundary.");
+    }
+    const registered = (await this.#git([
+      "worktree",
+      "list",
+      "--porcelain",
+      "-z",
+    ])).split("\0\0").some((record) => {
+      const fields = new Map(
+        record.split("\0").map((line) => {
+          const separator = line.indexOf(" ");
+          return separator < 0
+            ? [line, ""]
+            : [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+      );
+      return (
+        fields.get("worktree") === candidate &&
+        fields.get("HEAD") === input.expectedHead &&
+        fields.get("branch") === `refs/heads/${input.branch}`
+      );
+    });
+    if (!registered) {
+      throw new Error("Host requires an exact registered Final Fix worktree.");
+    }
+    const candidateGit = (arguments_: string[]) =>
+      executeGit(candidate, this.#localGitEnvironment, arguments_);
+    let adoptedHead: string | undefined;
+    let operationFailure: unknown;
+    try {
+      const [hostHead, candidateHead, candidateBranch, dirty] = await Promise.all([
+        this.localHead(),
+        candidateGit(["rev-parse", "--verify", "HEAD"]),
+        candidateGit(["symbolic-ref", "--short", "HEAD"]),
+        candidateGit(["status", "--porcelain=v1", "--untracked-files=all"]),
+      ]);
+      if (
+        hostHead !== input.expectedHead ||
+        candidateHead !== input.expectedHead ||
+        candidateBranch !== input.branch ||
+        dirty.length === 0
+      ) {
+        throw new Error("Preserved Final Fix worktree cannot be attributed.");
+      }
+      await candidateGit(["add", "--all"]);
+      await candidateGit([
+        "-c",
+        "user.name=Sandcastle Queue",
+        "-c",
+        "user.email=sandcastle-queue@users.noreply.github.com",
+        "commit",
+        "--no-gpg-sign",
+        "-m",
+        "fix: apply authorized Final Review findings",
+      ]);
+      adoptedHead = await candidateGit(["rev-parse", "--verify", "HEAD"]);
+      const [count, parents, clean] = await Promise.all([
+        candidateGit(["rev-list", "--count", `${input.expectedHead}..${adoptedHead}`]),
+        candidateGit(["show", "--no-patch", "--format=%P", adoptedHead]),
+        candidateGit(["status", "--porcelain=v1", "--untracked-files=all"]),
+      ]);
+      if (count !== "1" || parents !== input.expectedHead || clean !== "") {
+        throw new Error("Host-adopted Final Fix commit failed linearity validation.");
+      }
+      await this.#git(["merge", "--ff-only", adoptedHead]);
+      if ((await this.localHead()) !== adoptedHead) {
+        throw new Error("Host-adopted Final Fix commit was not checked out.");
+      }
+    } catch (error) {
+      operationFailure = error;
+    }
+    const cleanup = [];
+    for (const arguments_ of [
+      ["worktree", "remove", "--force", candidate],
+      ["branch", "-D", input.branch],
+    ]) {
+      try {
+        await this.#git(arguments_);
+        cleanup.push("fulfilled");
+      } catch {
+        cleanup.push("rejected");
+      }
+    }
+    if (operationFailure) throw operationFailure;
+    if (cleanup.includes("rejected")) {
+      throw new Error("Host could not clean up the adopted Final Fix worktree.");
+    }
+    return adoptedHead!;
   }
 
   async checkoutIntegration(branch: string, head: string): Promise<void> {

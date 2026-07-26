@@ -48,6 +48,10 @@ function fixture() {
   }];
   let remoteHead = reviewedHead;
   const boundary = {
+    async adoptFinalFixChanges(input) {
+      events.push(["adopt", input]);
+      return fixedHead;
+    },
     async checkoutIntegration(branch, head) {
       events.push(["checkout", branch, head]);
     },
@@ -160,6 +164,55 @@ test("authorized Final Fix publishes one new HEAD and dispatches independent rer
       ref: "main",
     },
   ]);
+});
+
+test("an authorized Final Fix adopts one preserved Agent patch before Host tests", async () => {
+  const state = fixture();
+  let localHead = reviewedHead;
+  state.boundary.localHead = async () => {
+    state.events.push(["localHead"]);
+    return localHead;
+  };
+  state.boundary.adoptFinalFixChanges = async (input) => {
+    state.events.push(["adopt", input]);
+    localHead = fixedHead;
+    return fixedHead;
+  };
+  state.runWorkUnit = async (input) => {
+    state.events.push(["fix", input]);
+    return {
+      branch: "sandcastle/queue-final-fix/run-1",
+      commits: [],
+      preservedWorktreePath: "/repository/.sandcastle/worktrees/final-fix-1",
+      role: "final-fix",
+      sessionId: "fix-session-1",
+      status: "complete",
+      streamSummary: { jsonLines: 1, lineCount: 1, textLines: 0 },
+    };
+  };
+
+  const result = await orchestrateFinalFix(
+    options(),
+    state.boundary,
+    state.select,
+    state.runWorkUnit,
+  );
+
+  assert.equal(result.status, "final-rereview-dispatched");
+  assert.deepEqual(
+    state.events.find(([name]) => name === "adopt"),
+    ["adopt", {
+      branch: "sandcastle/queue-final-fix/run-1",
+      expectedHead: reviewedHead,
+      preservedWorktreePath: "/repository/.sandcastle/worktrees/final-fix-1",
+    }],
+  );
+  assert.ok(
+    state.events.findIndex(([name]) => name === "adopt") <
+      state.events.findIndex(
+        ([name, argv]) => name === "command" && argv[1] === "test",
+      ),
+  );
 });
 
 test("an unproven Final Fix push stops before marker and Rereview dispatch", async () => {

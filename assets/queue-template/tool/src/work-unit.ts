@@ -20,6 +20,7 @@ interface RunResultLike {
   branch: string;
   commits: Array<{ sha: string }>;
   iterations: Array<{ sessionId?: string }>;
+  preservedWorktreePath?: string;
   stdout: string;
 }
 
@@ -51,6 +52,7 @@ export interface WorkUnitOptions {
 export interface WorkUnitResult {
   branch: string;
   commits: string[];
+  preservedWorktreePath?: string;
   role: WorkUnitRole;
   sessionId: string;
   status: "complete";
@@ -169,6 +171,9 @@ export async function executeWorkUnit(
     return {
       branch: result.branch,
       commits: result.commits.map(({ sha }) => sha),
+      ...(result.preservedWorktreePath
+        ? { preservedWorktreePath: result.preservedWorktreePath }
+        : {}),
       role: options.role,
       sessionId: sessionId(result),
       status: "complete",

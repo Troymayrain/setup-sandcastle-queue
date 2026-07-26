@@ -22,6 +22,11 @@ const objectIdPattern = /^[0-9a-f]{40}$/u;
 const runIdPattern = /^[1-9][0-9]*$/u;
 
 export interface FinalFixBoundary {
+  adoptFinalFixChanges(input: {
+    branch: string;
+    expectedHead: string;
+    preservedWorktreePath: string;
+  }): Promise<string>;
   checkoutIntegration(branch: string, head: string): Promise<void>;
   commitParents(commit: string): Promise<string[]>;
   createFinalFixMarker(
@@ -167,6 +172,13 @@ export async function orchestrateFinalFix(
     promptFile: options.promptFile,
     role: "final-fix",
   });
+  if (workUnit.commits.length === 0 && workUnit.preservedWorktreePath) {
+    workUnit.commits.push(await boundary.adoptFinalFixChanges({
+      branch: workUnit.branch,
+      expectedHead: options.expectedHead,
+      preservedWorktreePath: workUnit.preservedWorktreePath,
+    }));
+  }
   await runCommandGroups(
     [options.commands.test, options.commands.verification],
     (argv) => boundary.runCommand(argv, commandEnvironment),
