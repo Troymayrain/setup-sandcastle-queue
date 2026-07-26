@@ -10,8 +10,29 @@ permissions:
   contents: read
 
 jobs:
+  contract_surface:
+    name: Detect the active contract surface
+    runs-on: ubuntu-24.04
+    outputs:
+      contract_surface: ${{ steps.detect.outputs.contract_surface }}
+    steps:
+      - name: Check out the candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Detect legacy or replacement contracts
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f test/mvp-cli.test.mjs ]]; then
+            echo "contract_surface=mvp" >> "$GITHUB_OUTPUT"
+          else
+            echo "contract_surface=legacy" >> "$GITHUB_OUTPUT"
+          fi
+
   quality:
     name: Typecheck and full tests
+    needs: contract_surface
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the candidate
@@ -25,10 +46,17 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
-      - run: npm test
+      - name: Run the legacy full test suite
+        if: ${{ needs.contract_surface.outputs.contract_surface == 'legacy' }}
+        run: npm test
+      - name: Run the replacement CLI contract suite
+        if: ${{ needs.contract_surface.outputs.contract_surface == 'mvp' }}
+        run: npm run build && node --test test/mvp-cli.test.mjs
 
   api-contracts:
     name: Local GitHub and Anthropic contracts
+    needs: contract_surface
+    if: ${{ needs.contract_surface.outputs.contract_surface == 'legacy' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -60,6 +88,8 @@ jobs:
 
   fixture-matrix:
     name: Fixture ${{ matrix.fixture }}
+    needs: contract_surface
+    if: ${{ needs.contract_surface.outputs.contract_surface == 'legacy' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -141,6 +171,7 @@ jobs:
     name: Verify the complete credentialless matrix
     if: ${{ always() }}
     needs:
+      - contract_surface
       - quality
       - api-contracts
       - fixture-matrix
@@ -160,8 +191,15 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - name: Verify replacement GitHub, installation, and Queue contracts
+        if: ${{ needs.contract_surface.outputs.contract_surface == 'mvp' }}
+        run: >-
+          node --test
+          test/mvp-github.test.mjs
+          test/mvp-install-contract-matrix.test.mjs
+          test/template-tool.test.mjs
       - name: Download available credentialless evidence
-        if: ${{ always() }}
+        if: ${{ always() && needs.contract_surface.outputs.contract_surface == 'legacy' }}
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -169,7 +207,7 @@ jobs:
           path: ${{ runner.temp }}/credentialless-evidence
           merge-multiple: true
       - name: Assemble candidate-bound evidence
-        if: ${{ always() }}
+        if: ${{ always() && needs.contract_surface.outputs.contract_surface == 'legacy' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -194,7 +232,7 @@ jobs:
             }' > "$RUNNER_TEMP/fixture-matrix-input.json"
       - name: Verify fixture and contract evidence
         id: verify
-        if: ${{ always() }}
+        if: ${{ always() && needs.contract_surface.outputs.contract_surface == 'legacy' }}
         continue-on-error: true
         shell: bash
         run: |
@@ -203,7 +241,7 @@ jobs:
             --input "$RUNNER_TEMP/fixture-matrix-input.json" \
             | tee "$RUNNER_TEMP/fixture-matrix-gate.json"
       - name: Upload the reviewable credentialless gate report
-        if: ${{ always() }}
+        if: ${{ always() && needs.contract_surface.outputs.contract_surface == 'legacy' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sandcastle-credentialless-${{ github.sha }}
@@ -211,5 +249,5 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Enforce the credentialless gate
-        if: ${{ always() && steps.verify.outcome != 'success' }}
+        if: ${{ always() && needs.contract_surface.outputs.contract_surface == 'legacy' && steps.verify.outcome != 'success' }}
         run: exit 4
