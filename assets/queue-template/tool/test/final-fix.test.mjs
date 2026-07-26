@@ -195,7 +195,31 @@ test("a Final Fix commit handoff failure identifies the rejected proof", async (
       state.select,
       state.runWorkUnit,
     ),
-    /Final Fix commit proof failed: head-not-advanced/u,
+    {
+      message: "Final Fix commit proof failed: head-not-advanced,commit-head-mismatch",
+    },
+  );
+  assert.equal(
+    state.events.some(([name]) => ["push", "marker", "rereview"].includes(name)),
+    false,
+  );
+});
+
+test("an invalid Final Fix HEAD is rejected before Git metadata lookup", async () => {
+  const state = fixture();
+  state.boundary.localHead = async () => "not-an-object-id";
+  state.boundary.commitParents = async () => {
+    assert.fail("invalid HEAD must not reach commit metadata lookup");
+  };
+
+  await assert.rejects(
+    orchestrateFinalFix(
+      options(),
+      state.boundary,
+      state.select,
+      state.runWorkUnit,
+    ),
+    { message: "Final Fix commit proof failed: invalid-head" },
   );
   assert.equal(
     state.events.some(([name]) => ["push", "marker", "rereview"].includes(name)),

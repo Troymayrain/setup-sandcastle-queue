@@ -173,12 +173,14 @@ export async function orchestrateFinalFix(
   );
 
   const afterHead = await boundary.localHead();
+  if (!objectIdPattern.test(afterHead)) {
+    throw new Error("Final Fix commit proof failed: invalid-head");
+  }
   const [parents, clean] = await Promise.all([
     boundary.commitParents(afterHead),
     boundary.isClean(),
   ]);
   const rejectedProofs = [
-    ...(!objectIdPattern.test(afterHead) ? ["invalid-head"] : []),
     ...(afterHead === options.expectedHead ? ["head-not-advanced"] : []),
     ...(workUnit.role !== "final-fix" ? ["role-mismatch"] : []),
     ...(workUnit.commits.length !== 1 ? ["commit-count"] : []),
