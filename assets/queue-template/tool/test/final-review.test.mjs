@@ -9,6 +9,12 @@ import {
 
 const integrationHead = "1".repeat(40);
 const baseHead = "2".repeat(40);
+const reviewFinding = {
+  line: 41,
+  path: "docs/runbook.md",
+  problem: "The recovery step skips the required backup check.",
+  requiredFix: "Add the backup check before the restore command.",
+};
 
 function options() {
   return {
@@ -33,9 +39,11 @@ function options() {
 }
 
 function fixture({
+  findings,
   frontier = { activated: [], reason: "empty", status: "waiting" },
   verdict = "pass",
 } = {}) {
+  findings ??= verdict === "needs-fix" ? [reviewFinding] : [];
   const comments = [];
   const events = [];
   const boundary = {
@@ -106,6 +114,7 @@ function fixture({
       sessionId: "review-session-1",
       status: "complete",
       streamSummary: { jsonLines: 1, lineCount: 1, textLines: 0 },
+      findings,
       verdict,
     };
   };
@@ -174,6 +183,10 @@ test("needs-fix records the immutable verdict and dispatches one exact-head Fina
 
   assert.equal(result.status, "final-fix-dispatched");
   assert.equal(state.events.some(([name]) => name === "marker"), true);
+  assert.deepEqual(
+    state.events.find(([name]) => name === "marker")[2].findings,
+    [reviewFinding],
+  );
   assert.equal(state.events.some(([name]) => name === "ready"), false);
   assert.deepEqual(state.events.at(-1), [
     "finalFix",
@@ -186,6 +199,24 @@ test("needs-fix records the immutable verdict and dispatches one exact-head Fina
       ref: "main",
     },
   ]);
+});
+
+test("needs-fix without actionable findings stops before marker and dispatch", async () => {
+  const state = fixture({ findings: [], verdict: "needs-fix" });
+
+  await assert.rejects(
+    orchestrateFirstFinalReview(
+      options(),
+      state.boundary,
+      state.select,
+      state.runWorkUnit,
+    ),
+    /structured review verdict/u,
+  );
+  assert.equal(
+    state.events.some(([name]) => ["marker", "finalFix"].includes(name)),
+    false,
+  );
 });
 
 test("a prior Final Fix turns a later needs-fix review over to a human", async () => {

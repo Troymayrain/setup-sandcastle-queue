@@ -154,6 +154,7 @@ export async function orchestrateFinalFix(
   if (!markers || markers.fixes.length > 0 || authorization?.length !== 1) {
     return conflict("final-fix-authorization-unprovable-or-consumed");
   }
+  const reviewMarker = authorization[0]!.marker;
 
   await boundary.checkoutIntegration(
     options.integrationBranch,
@@ -167,6 +168,7 @@ export async function orchestrateFinalFix(
   const workUnit = await runWorkUnit({
     cwd: options.repository,
     environment: options.environment,
+    findings: reviewMarker.findings,
     model: options.model,
     promptFile: options.promptFile,
     role: "final-fix",

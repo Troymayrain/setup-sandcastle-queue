@@ -3,12 +3,28 @@ const markerPrefix = "<!-- sandcastle-final-review\n";
 const markerSuffix = "\n-->";
 const runIdPattern = /^(?:0|[1-9][0-9]*)$/u;
 const sessionIdPattern = /^[A-Za-z0-9._:-]{1,200}$/u;
+const findingPathPattern = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,240}$/u;
+const findingTextPattern = /^[^\u0000-\u001f\u007f-\u009f]{1,500}$/u;
+
+export interface ReviewFinding {
+  line: number;
+  path: string;
+  problem: string;
+  requiredFix: string;
+}
+
+export interface ReviewOutput {
+  findings: ReviewFinding[];
+  schemaVersion: 1;
+  verdict: "needs-fix" | "pass";
+}
 
 export interface FinalReviewMarker {
   baseHead: string;
+  findings: ReviewFinding[];
   integrationHead: string;
   runId: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
   type: "sandcastle-final-review";
   verdict: "needs-fix" | "pass";
 }
@@ -25,10 +41,11 @@ export interface FinalFixMarker {
 
 export interface FinalRereviewMarker {
   baseHead: string;
+  findings: ReviewFinding[];
   fixRunId: string;
   integrationHead: string;
   runId: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
   type: "sandcastle-final-rereview";
   verdict: "needs-fix" | "pass";
 }
@@ -39,12 +56,67 @@ function exactKeys(candidate: object, expected: string[]): boolean {
   );
 }
 
+function validReviewFinding(candidate: unknown): candidate is ReviewFinding {
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    exactKeys(candidate, ["line", "path", "problem", "requiredFix"]) &&
+    Number.isSafeInteger((candidate as ReviewFinding).line) &&
+    (candidate as ReviewFinding).line >= 1 &&
+    (candidate as ReviewFinding).line <= 10_000_000 &&
+    typeof (candidate as ReviewFinding).path === "string" &&
+    findingPathPattern.test((candidate as ReviewFinding).path) &&
+    typeof (candidate as ReviewFinding).problem === "string" &&
+    findingTextPattern.test((candidate as ReviewFinding).problem) &&
+    typeof (candidate as ReviewFinding).requiredFix === "string" &&
+    findingTextPattern.test((candidate as ReviewFinding).requiredFix)
+  );
+}
+
+export function validateReviewOutput(candidate: unknown): ReviewOutput {
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    !exactKeys(candidate, ["findings", "schemaVersion", "verdict"])
+  ) {
+    throw new Error("Review output must be a structured review verdict.");
+  }
+  const output = candidate as ReviewOutput;
+  if (
+    output.schemaVersion !== 1 ||
+    (output.verdict !== "pass" && output.verdict !== "needs-fix") ||
+    !Array.isArray(output.findings) ||
+    output.findings.length > 8 ||
+    !output.findings.every(validReviewFinding) ||
+    (output.verdict === "pass" && output.findings.length !== 0) ||
+    (output.verdict === "needs-fix" && output.findings.length === 0)
+  ) {
+    throw new Error("Review output must be a structured review verdict.");
+  }
+  return output;
+}
+
+export function parseReviewOutput(source: string): ReviewOutput {
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(source);
+  } catch {
+    throw new Error("Review output must be a structured review verdict.");
+  }
+  return validateReviewOutput(candidate);
+}
+
 export function renderFinalReviewMarker(marker: FinalReviewMarker): string {
+  validateReviewOutput({
+    findings: marker.findings,
+    schemaVersion: 1,
+    verdict: marker.verdict,
+  });
   if (
     !objectIdPattern.test(marker.baseHead) ||
     !objectIdPattern.test(marker.integrationHead) ||
     !runIdPattern.test(marker.runId) ||
-    marker.schemaVersion !== 1 ||
+    marker.schemaVersion !== 2 ||
     marker.type !== "sandcastle-final-review" ||
     (marker.verdict !== "pass" && marker.verdict !== "needs-fix")
   ) {
@@ -103,12 +175,17 @@ export function parseFinalFixMarker(body: string): FinalFixMarker | null {
 export function renderFinalRereviewMarker(
   marker: FinalRereviewMarker,
 ): string {
+  validateReviewOutput({
+    findings: marker.findings,
+    schemaVersion: 1,
+    verdict: marker.verdict,
+  });
   if (
     !objectIdPattern.test(marker.baseHead) ||
     !objectIdPattern.test(marker.integrationHead) ||
     !runIdPattern.test(marker.fixRunId) ||
     !runIdPattern.test(marker.runId) ||
-    marker.schemaVersion !== 1 ||
+    marker.schemaVersion !== 2 ||
     marker.type !== "sandcastle-final-rereview" ||
     (marker.verdict !== "pass" && marker.verdict !== "needs-fix")
   ) {
@@ -136,6 +213,7 @@ export function parseFinalRereviewMarker(
     candidate === null ||
     !exactKeys(candidate, [
       "baseHead",
+      "findings",
       "fixRunId",
       "integrationHead",
       "runId",
@@ -171,6 +249,7 @@ export function parseFinalReviewMarker(
     candidate === null ||
     !exactKeys(candidate, [
       "baseHead",
+      "findings",
       "integrationHead",
       "runId",
       "schemaVersion",

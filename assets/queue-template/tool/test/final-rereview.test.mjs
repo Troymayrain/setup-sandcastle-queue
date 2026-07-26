@@ -9,6 +9,12 @@ import { orchestrateFinalRereview } from "../dist/final-rereview.js";
 
 const fixedHead = "2".repeat(40);
 const baseHead = "b".repeat(40);
+const rereviewFinding = {
+  line: 9,
+  path: "src/recovery.ts",
+  problem: "The fix still skips the backup gate.",
+  requiredFix: "Require the backup gate before recovery.",
+};
 
 function options() {
   return {
@@ -34,9 +40,11 @@ function options() {
 
 function fixture({
   currentHead = fixedHead,
+  findings,
   sessionId = "rereview-session-1",
   verdict = "pass",
 } = {}) {
+  findings ??= verdict === "needs-fix" ? [rereviewFinding] : [];
   const events = [];
   const comments = [{
     body: renderFinalFixMarker({
@@ -110,6 +118,7 @@ function fixture({
     sessionId,
     status: "complete",
     streamSummary: { jsonLines: 1, lineCount: 1, textLines: 0 },
+    findings,
     verdict,
   });
   return { boundary, events, frontiers, runWorkUnit, select };
@@ -149,6 +158,10 @@ test("failed rereview records needs-fix and never authorizes a second automatic 
 
   assert.equal(result.status, "needs-human-review");
   assert.equal(state.events.some(([name]) => name === "ready"), false);
+  assert.deepEqual(
+    state.events.find(([name]) => name === "marker")[2].findings,
+    [rereviewFinding],
+  );
   assert.equal(
     state.events.some(([name]) => /fix/iu.test(name)),
     false,

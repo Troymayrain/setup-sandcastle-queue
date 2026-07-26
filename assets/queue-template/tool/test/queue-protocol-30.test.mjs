@@ -363,6 +363,7 @@ class StatefulQueueFake {
       sessionId: "final-review-session-1",
       status: "complete",
       streamSummary: { jsonLines: 1, lineCount: 1, textLines: 0 },
+      findings: [],
       verdict: "pass",
     };
   };

@@ -210,6 +210,7 @@ export async function orchestrateFinalRereview(
     !includesFix ||
     workUnit.sessionId === fixMarker.sessionId ||
     workUnit.commits.length !== 0 ||
+    !Array.isArray(workUnit.findings) ||
     !unchanged ||
     (workUnit.verdict !== "pass" && workUnit.verdict !== "needs-fix")
   ) {
@@ -241,13 +242,15 @@ export async function orchestrateFinalRereview(
 
   const marker: FinalRereviewMarker = {
     baseHead: temporary.baseHead,
+    findings: workUnit.findings,
     fixRunId: fixMarker.runId,
     integrationHead: options.expectedHead,
     runId: runId!,
-    schemaVersion: 1,
+    schemaVersion: 2,
     type: "sandcastle-final-rereview",
     verdict: workUnit.verdict,
   };
+  renderFinalRereviewMarker(marker);
   await boundary.createFinalRereviewMarker(pullRequest.number, marker);
   const visibleMarkers = scanFinalizationMarkers(
     await boundary.listIssueComments(pullRequest.number),

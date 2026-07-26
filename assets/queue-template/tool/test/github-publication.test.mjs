@@ -197,9 +197,10 @@ test("Final Review marker creation and ready transition use distinct non-retried
     });
     await client.createFinalReviewMarker(31, {
       baseHead: "b".repeat(40),
+      findings: [],
       integrationHead: head,
       runId: "9002",
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: "sandcastle-final-review",
       verdict: "pass",
     });
@@ -252,10 +253,16 @@ test("Final Fix and Rereview use immutable PR markers and bound workflow dispatc
     });
     await client.createFinalRereviewMarker(31, {
       baseHead: "b".repeat(40),
+      findings: [{
+        line: 9,
+        path: "src/recovery.ts",
+        problem: "The fix still skips the backup gate.",
+        requiredFix: "Require the backup gate before recovery.",
+      }],
       fixRunId: "9003",
       integrationHead: head,
       runId: "9004",
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: "sandcastle-final-rereview",
       verdict: "needs-fix",
     });

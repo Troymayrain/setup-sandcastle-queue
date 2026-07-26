@@ -64,8 +64,8 @@ async function executeGit(
       maxBuffer: 16 * 1024 * 1024,
     });
     return stdout.trim();
-  } catch {
-    throw new Error("A required Host Git operation failed.");
+  } catch (error) {
+    throw new Error("A required Host Git operation failed.", { cause: error });
   }
 }
 
@@ -203,24 +203,29 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
     } catch (error) {
       operationFailure = error;
     }
-    const cleanup = [];
+    const cleanupFailures: unknown[] = [];
     for (const arguments_ of [
       ["worktree", "remove", "--force", candidate],
       ["branch", "-D", branch],
     ]) {
       try {
         await this.#git(arguments_);
-        cleanup.push("fulfilled");
-      } catch {
-        cleanup.push("rejected");
+      } catch (error) {
+        cleanupFailures.push(error);
       }
     }
-    if (operationFailure && cleanup.includes("rejected")) {
-      throw new Error("Final Fix adoption failed and cleanup was incomplete.");
+    if (operationFailure && cleanupFailures.length > 0) {
+      throw new AggregateError(
+        [operationFailure, ...cleanupFailures],
+        "Final Fix adoption failed and cleanup was incomplete.",
+      );
     }
     if (operationFailure) throw operationFailure;
-    if (cleanup.includes("rejected")) {
-      throw new Error("Host could not clean up the adopted Final Fix worktree.");
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        cleanupFailures,
+        "Host could not clean up the adopted Final Fix worktree.",
+      );
     }
     return adoptedHead!;
   }

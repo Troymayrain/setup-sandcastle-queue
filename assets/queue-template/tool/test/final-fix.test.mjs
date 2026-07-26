@@ -9,6 +9,12 @@ import { orchestrateFinalFix } from "../dist/final-fix.js";
 
 const reviewedHead = "1".repeat(40);
 const fixedHead = "2".repeat(40);
+const reviewFinding = {
+  line: 41,
+  path: "docs/runbook.md",
+  problem: "The recovery step skips the required backup check.",
+  requiredFix: "Add the backup check before the restore command.",
+};
 
 function options() {
   return {
@@ -38,9 +44,10 @@ function fixture() {
   const comments = [{
     body: renderFinalReviewMarker({
       baseHead: "b".repeat(40),
+      findings: [reviewFinding],
       integrationHead: reviewedHead,
       runId: "9002",
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: "sandcastle-final-review",
       verdict: "needs-fix",
     }),
@@ -164,6 +171,10 @@ test("authorized Final Fix publishes one new HEAD and dispatches independent rer
       ref: "main",
     },
   ]);
+  assert.deepEqual(
+    state.events.find(([name]) => name === "fix")[1].findings,
+    [reviewFinding],
+  );
 });
 
 test("an authorized Final Fix adopts one preserved Agent patch before Host tests", async () => {
@@ -317,6 +328,48 @@ test("stale or already-consumed Final Fix authorization cannot write", async () 
     "conflict",
   );
   assert.equal(consumed.events.some(([name]) => name === "checkout"), false);
+});
+
+test("legacy or empty Final Review findings cannot authorize Final Fix", async () => {
+  const invalidMarkers = [
+    {
+      baseHead: "b".repeat(40),
+      integrationHead: reviewedHead,
+      runId: "9002",
+      schemaVersion: 1,
+      type: "sandcastle-final-review",
+      verdict: "needs-fix",
+    },
+    {
+      baseHead: "b".repeat(40),
+      findings: [],
+      integrationHead: reviewedHead,
+      runId: "9002",
+      schemaVersion: 2,
+      type: "sandcastle-final-review",
+      verdict: "needs-fix",
+    },
+  ];
+
+  for (const marker of invalidMarkers) {
+    const state = fixture();
+    state.comments[0].body =
+      `<!-- sandcastle-final-review\n${JSON.stringify(marker)}\n-->`;
+
+    assert.deepEqual(
+      await orchestrateFinalFix(
+        options(),
+        state.boundary,
+        state.select,
+        state.runWorkUnit,
+      ),
+      {
+        reason: "final-fix-authorization-unprovable-or-consumed",
+        status: "conflict",
+      },
+    );
+    assert.equal(state.events.some(([name]) => name === "checkout"), false);
+  }
 });
 
 test("a Ticket observed after fix publication returns to processing without rereview", async () => {

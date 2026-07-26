@@ -208,6 +208,7 @@ export async function orchestrateFirstFinalReview(
     !objectIdPattern.test(temporary.baseHead) ||
     review.role !== "final-review" ||
     review.commits.length !== 0 ||
+    !Array.isArray(review.findings) ||
     !temporaryUnchanged ||
     (review.verdict !== "pass" && review.verdict !== "needs-fix")
   ) {
@@ -252,12 +253,14 @@ export async function orchestrateFirstFinalReview(
   }
   const marker: FinalReviewMarker = {
     baseHead: temporary.baseHead,
+    findings: review.findings,
     integrationHead: options.expectedHead,
     runId: runId!,
-    schemaVersion: 1,
+    schemaVersion: 2,
     type: "sandcastle-final-review",
     verdict: review.verdict,
   };
+  renderFinalReviewMarker(marker);
   let visibleComments = await boundary.listIssueComments(pullRequest.number);
   let visibleMarker = inspectFinalReviewMarker(visibleComments, marker);
   if (visibleMarker.status === "none") {

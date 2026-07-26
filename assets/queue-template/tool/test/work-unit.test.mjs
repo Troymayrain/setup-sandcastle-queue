@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   const observed = [];
   const results = [];
   const rawPaths = [];
+  let finalFixPrompt = "";
   let nextSession = 1;
   const boundary = {
     claudeCode(model, options) {
@@ -33,12 +34,17 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
       const review =
         options.name === "queue-final-review" ||
         options.name === "queue-final-rereview";
+      if (options.name === "queue-final-fix") {
+        finalFixPrompt = readFileSync(options.promptFile, "utf8");
+      }
       return {
         branch: "sandcastle/integration",
         commits: review ? [] : [{ sha: `${nextSession}`.padStart(40, "a") }],
         iterations: [{ sessionId: `session-${nextSession++}` }],
         preservedWorktreePath: review ? undefined : "/worktree/preserved",
-        stdout: review ? "pass" : "complete",
+        stdout: review
+          ? '{"schemaVersion":1,"verdict":"pass","findings":[]}'
+          : "complete",
       };
     },
   };
@@ -50,7 +56,23 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
 
   for (const role of ["ticket", "final-review", "final-fix", "final-rereview"]) {
     results.push(await executeWorkUnit(
-      { cwd, environment, model: `${role}-model`, promptFile, role },
+      {
+        cwd,
+        environment,
+        ...(role === "final-fix"
+          ? {
+              findings: [{
+                line: 41,
+                path: "docs/runbook.md",
+                problem: "The recovery step skips the required backup check.",
+                requiredFix: "Add the backup check before the restore command.",
+              }],
+            }
+          : {}),
+        model: `${role}-model`,
+        promptFile,
+        role,
+      },
       boundary,
     ));
   }
@@ -78,6 +100,8 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   assert.equal(results[0].preservedWorktreePath, "/worktree/preserved");
   assert.equal("preservedWorktreePath" in results[1], false);
   assert.equal(rawPaths.every((path) => !existsSync(path)), true);
+  assert.match(finalFixPrompt, /docs\/runbook\.md/u);
+  assert.match(finalFixPrompt, /required backup check/u);
   assert.deepEqual(parseRawAgentStream('{"type":"result"}\ntext\n'), {
     jsonLines: 1,
     lineCount: 2,
@@ -119,10 +143,23 @@ test("raw stream is deleted when Sandcastle fails", async () => {
   assert.equal(existsSync(rawPath), false);
 });
 
-test("read-only review rejects any output other than the exact verdict", async () => {
+test("read-only review accepts only a bounded structured verdict", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "queue-tool-invalid-review-"));
   const promptFile = join(cwd, "prompt.md");
   writeFileSync(promptFile, "review\n");
+  let stdout = JSON.stringify({
+    findings: [{
+      line: 41,
+      path: "docs/runbook.md",
+      problem: "The recovery step skips the required backup check.",
+      requiredFix: "Add the backup check before the restore command.",
+    }],
+    schemaVersion: 1,
+    verdict: "needs-fix",
+  });
+  const reviewSecret = "provider-secret-value";
+  const baseUrl = "https://provider.example";
+  const lowercaseApiKey = "lowercase-api-key-value";
   const boundary = {
     claudeCode: () => ({}),
     docker: () => ({}),
@@ -132,25 +169,58 @@ test("read-only review rejects any output other than the exact verdict", async (
         branch: "temporary",
         commits: [],
         iterations: [{ sessionId: "review-session" }],
-        stdout: "PASS with explanation",
+        stdout,
       };
     },
   };
 
-  await assert.rejects(
-    executeWorkUnit(
+  const accepted = await executeWorkUnit(
+    {
+      cwd,
+      environment: {
+        ANTHROPIC_AUTH_TOKEN: reviewSecret,
+        ANTHROPIC_BASE_URL: baseUrl,
+        lowercase_api_key: lowercaseApiKey,
+      },
+      model: "review-model",
+      promptFile,
+      role: "final-review",
+    },
+    boundary,
+  );
+  assert.equal(accepted.verdict, "needs-fix");
+  assert.deepEqual(accepted.findings, [{
+    line: 41,
+    path: "docs/runbook.md",
+    problem: "The recovery step skips the required backup check.",
+    requiredFix: "Add the backup check before the restore command.",
+  }]);
+
+  for (const invalid of [
+    "PASS with explanation",
+    '{"schemaVersion":1,"verdict":"needs-fix","findings":[]}',
+    '{"schemaVersion":1,"verdict":"pass","findings":[{"path":"docs/runbook.md","line":1,"problem":"wrong","requiredFix":"fix it"}]}',
+    '{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":"../secret","line":1,"problem":"wrong","requiredFix":"fix it"}]}',
+    '{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":1,"line":1,"problem":2,"requiredFix":3}]}',
+    '{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":"docs/runbook.md","line":1,"problem":"contains C1\u0085control","requiredFix":"remove it"}]}',
+    '{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":"docs/runbook.md","line":1,"problem":"leaked provider-secret-value","requiredFix":"remove it"}]}',
+    `{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":"docs/runbook.md","line":1,"problem":"leaked ${baseUrl}","requiredFix":"remove it"}]}`,
+    `{"schemaVersion":1,"verdict":"needs-fix","findings":[{"path":"docs/runbook.md","line":1,"problem":"leaked ${lowercaseApiKey}","requiredFix":"remove it"}]}`,
+  ]) {
+    stdout = invalid;
+    await assert.rejects(executeWorkUnit(
       {
         cwd,
         environment: {
-          ANTHROPIC_AUTH_TOKEN: "secret",
-          ANTHROPIC_BASE_URL: "https://provider.example",
+          ANTHROPIC_AUTH_TOKEN: reviewSecret,
+          ANTHROPIC_BASE_URL: baseUrl,
+          lowercase_api_key: lowercaseApiKey,
         },
         model: "review-model",
         promptFile,
         role: "final-review",
       },
       boundary,
-    ),
-    /verdict must be exactly/u,
-  );
+    ), /Review output/u);
+  }
 });

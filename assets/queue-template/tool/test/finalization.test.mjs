@@ -55,10 +55,11 @@ test("remote Final Fix facts select Rereview after later Ticket work", async () 
   comments.push({
     body: renderFinalRereviewMarker({
       baseHead: "b".repeat(40),
+      findings: [],
       fixRunId: "9003",
       integrationHead: "4".repeat(40),
       runId: "9006",
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: "sandcastle-final-rereview",
       verdict: "pass",
     }),
