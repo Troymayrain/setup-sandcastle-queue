@@ -161,7 +161,7 @@ export function renderQueueTemplate(config: QueueConfig): TemplateAsset[] {
     {
       path: ".sandcastle/prompts/final-fix.md",
       content:
-        "# Final fix\n\nFix the findings authorized for the reviewed Integration Branch HEAD.\n",
+        "# Final fix\n\n修复已获授权、绑定到被审 Integration Branch HEAD 的问题。结束前，创建恰好一个以当前 HEAD 为父提交的 commit，并保持 worktree clean。不要添加 `Sandcastle-*` trailers；可信 Host 会在验证 commit 后添加发布元数据。不要 push，也不要修改 GitHub Issues 或 pull requests。\n",
     },
   ];
   return assets.sort((left, right) => left.path.localeCompare(right.path));
