@@ -57,7 +57,6 @@ test("Host adopts one attributable dirty Final Fix worktree as a linear commit",
     {},
   );
   const adoptedHead = await host.adoptFinalFixChanges({
-    branch,
     expectedHead,
     preservedWorktreePath,
   });
@@ -105,7 +104,7 @@ test("Host rejects an unregistered repository inside the worktree directory", as
   );
 
   await assert.rejects(
-    host.adoptFinalFixChanges({ branch, expectedHead, preservedWorktreePath }),
+    host.adoptFinalFixChanges({ expectedHead, preservedWorktreePath }),
     /registered Final Fix worktree/u,
   );
   assert.equal(git(repository, ["rev-parse", "HEAD"]), expectedHead);
@@ -119,7 +118,6 @@ test("Host rejects an unregistered repository inside the worktree directory", as
   writeFileSync(join(outsidePath, "app.txt"), "outside\n");
   await assert.rejects(
     host.adoptFinalFixChanges({
-      branch: outsideBranch,
       expectedHead,
       preservedWorktreePath: outsidePath,
     }),
@@ -166,18 +164,15 @@ test("Host cleans up a registered Final Fix worktree rejected as clean", async (
     {},
   );
 
+  git(preservedWorktreePath, ["branch", "-m", "untrusted/final-fix"]);
   await assert.rejects(
-    host.adoptFinalFixChanges({
-      branch,
-      expectedHead: "0".repeat(40),
-      preservedWorktreePath,
-    }),
+    host.adoptFinalFixChanges({ expectedHead, preservedWorktreePath }),
     /registered Final Fix worktree/u,
   );
+  git(preservedWorktreePath, ["branch", "-m", branch]);
   await assert.rejects(
     host.adoptFinalFixChanges({
-      branch: "sandcastle/queue-final-fix/wrong",
-      expectedHead,
+      expectedHead: "0".repeat(40),
       preservedWorktreePath,
     }),
     /registered Final Fix worktree/u,
@@ -185,7 +180,7 @@ test("Host cleans up a registered Final Fix worktree rejected as clean", async (
   assert.equal(existsSync(preservedWorktreePath), true);
 
   await assert.rejects(
-    host.adoptFinalFixChanges({ branch, expectedHead, preservedWorktreePath }),
+    host.adoptFinalFixChanges({ expectedHead, preservedWorktreePath }),
     /cannot be attributed/u,
   );
   assert.equal(existsSync(preservedWorktreePath), false);

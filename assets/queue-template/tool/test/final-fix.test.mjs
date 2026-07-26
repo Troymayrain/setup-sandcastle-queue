@@ -202,7 +202,6 @@ test("an authorized Final Fix adopts one preserved Agent patch before Host tests
   assert.deepEqual(
     state.events.find(([name]) => name === "adopt"),
     ["adopt", {
-      branch: "sandcastle/queue-final-fix/run-1",
       expectedHead: reviewedHead,
       preservedWorktreePath: "/repository/.sandcastle/worktrees/final-fix-1",
     }],

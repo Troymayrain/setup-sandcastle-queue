@@ -23,7 +23,6 @@ const runIdPattern = /^[1-9][0-9]*$/u;
 
 export interface FinalFixBoundary {
   adoptFinalFixChanges(input: {
-    branch: string;
     expectedHead: string;
     preservedWorktreePath: string;
   }): Promise<string>;
@@ -174,7 +173,6 @@ export async function orchestrateFinalFix(
   });
   if (workUnit.commits.length === 0 && workUnit.preservedWorktreePath) {
     workUnit.commits.push(await boundary.adoptFinalFixChanges({
-      branch: workUnit.branch,
       expectedHead: options.expectedHead,
       preservedWorktreePath: workUnit.preservedWorktreePath,
     }));

@@ -110,11 +110,9 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
   }
 
   async adoptFinalFixChanges(input: {
-    branch: string;
     expectedHead: string;
     preservedWorktreePath: string;
   }): Promise<string> {
-    await this.#assertBranchName(input.branch);
     const [repository, worktrees, candidate] = await Promise.all([
       realpath(this.#repository),
       realpath(join(this.#repository, ".sandcastle", "worktrees")),
@@ -135,7 +133,7 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
       "list",
       "--porcelain",
       "-z",
-    ])).split("\0\0").some((record) => {
+    ])).split("\0\0").map((record) => {
       const fields = new Map(
         record.split("\0").map((line) => {
           const separator = line.indexOf(" ");
@@ -144,15 +142,21 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
             : [line.slice(0, separator), line.slice(separator + 1)];
         }),
       );
+      return fields;
+    }).filter((fields) => {
+      const branch = fields.get("branch");
       return (
         fields.get("worktree") === candidate &&
         fields.get("HEAD") === input.expectedHead &&
-        fields.get("branch") === `refs/heads/${input.branch}`
+        branch?.startsWith("refs/heads/sandcastle/queue-final-fix/")
       );
     });
-    if (!registered) {
+    const registeredBranch = registered[0]?.get("branch");
+    if (registered.length !== 1 || !registeredBranch) {
       throw new Error("Host requires an exact registered Final Fix worktree.");
     }
+    const branch = registeredBranch.slice("refs/heads/".length);
+    await this.#assertBranchName(branch);
     const candidateGit = (arguments_: string[]) =>
       executeGit(candidate, this.#localGitEnvironment, arguments_);
     let adoptedHead: string | undefined;
@@ -167,7 +171,7 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
       if (
         hostHead !== input.expectedHead ||
         candidateHead !== input.expectedHead ||
-        candidateBranch !== input.branch ||
+        candidateBranch !== branch ||
         dirty.length === 0
       ) {
         throw new Error("Preserved Final Fix worktree cannot be attributed.");
@@ -202,7 +206,7 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
     const cleanup = [];
     for (const arguments_ of [
       ["worktree", "remove", "--force", candidate],
-      ["branch", "-D", input.branch],
+      ["branch", "-D", branch],
     ]) {
       try {
         await this.#git(arguments_);
