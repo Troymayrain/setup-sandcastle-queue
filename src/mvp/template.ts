@@ -83,21 +83,29 @@ jobs:
         run: npm ci && npm run build
       - name: Build the Agent sandbox image
         working-directory: .sandcastle/tool
-        run: docker build --tag sandcastle-queue-template:local .
+        run: |
+          docker build \\
+            --build-arg AGENT_UID="$(id -u)" \\
+            --build-arg AGENT_GID="$(id -g)" \\
+            --tag sandcastle-queue-template:local \\
+            .
       - name: Verify the Agent sandbox image
         run: |
           smoke_container="sandcastle-queue-smoke-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}"
+          smoke_mount="$(mktemp -d)"
           cleanup() {
             docker rm --force "$smoke_container" >/dev/null 2>&1 || true
+            rmdir "$smoke_mount" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
-          docker run --detach \
-            --name "$smoke_container" \
-            --user 1000:1000 \
-            --env HOME=/home/agent \
-            --workdir /home/agent/workspace \
+          docker run --detach \\
+            --name "$smoke_container" \\
+            --user "$(id -u):$(id -g)" \\
+            --env HOME=/home/agent \\
+            --volume "$smoke_mount:/home/agent/host-write-probe" \\
+            --workdir /home/agent/workspace \\
             sandcastle-queue-template:local
-          docker exec "$smoke_container" sh -c 'id && ls -ld /home/agent && test -w "$HOME" && git config --global --add safe.directory /home/agent/workspace'
+          docker exec "$smoke_container" sh -c 'id && ls -ld /home/agent && test -w "$HOME" && test -w /home/agent/host-write-probe && git config --global --add safe.directory /home/agent/workspace'
       - name: Run one bounded work unit
         working-directory: .sandcastle/tool
         env:

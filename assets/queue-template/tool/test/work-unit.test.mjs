@@ -68,8 +68,8 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     });
     assert.equal(options.agent.options.env.GITHUB_TOKEN, undefined);
     assert.deepEqual(options.sandbox.options.env, {});
-    assert.equal(options.sandbox.options.containerUid, 1000);
-    assert.equal(options.sandbox.options.containerGid, 1000);
+    assert.equal("containerUid" in options.sandbox.options, false);
+    assert.equal("containerGid" in options.sandbox.options, false);
   }
   assert.equal(observed[1].agent.options.permissionMode, "plan");
   assert.equal(observed[3].agent.options.permissionMode, "plan");

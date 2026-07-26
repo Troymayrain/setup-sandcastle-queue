@@ -87,11 +87,20 @@ test("installed Queue Template tool independently installs, typechecks, and test
   assert.match(workflow, /- name: Verify the Agent sandbox image/u);
   assert.match(
     workflow,
-    /docker run --detach[\s\S]*--user 1000:1000[\s\S]*--env HOME=\/home\/agent[\s\S]*sandcastle-queue-template:local/u,
+    /docker build[\s\S]*--build-arg AGENT_UID="\$\(id -u\)"[\s\S]*--build-arg AGENT_GID="\$\(id -g\)"[\s\S]*sandcastle-queue-template:local/u,
   );
   assert.match(
     workflow,
-    /docker exec[\s\S]*test -w "\$HOME"[\s\S]*git config --global --add safe\.directory \/home\/agent\/workspace/u,
+    /docker run --detach[\s\S]*--user "\$\(id -u\):\$\(id -g\)"[\s\S]*--env HOME=\/home\/agent[\s\S]*sandcastle-queue-template:local/u,
+  );
+  assert.match(workflow, /smoke_mount="\$\(mktemp -d\)"/u);
+  assert.match(
+    workflow,
+    /--volume "\$smoke_mount:\/home\/agent\/host-write-probe"/u,
+  );
+  assert.match(
+    workflow,
+    /docker exec[\s\S]*test -w "\$HOME"[\s\S]*test -w \/home\/agent\/host-write-probe[\s\S]*git config --global --add safe\.directory \/home\/agent\/workspace/u,
   );
   assert.doesNotMatch(workflow, /continuation_(?:count|limit)/u);
   assert.equal(
@@ -118,12 +127,14 @@ test("installed Queue Template tool independently installs, typechecks, and test
   const lock = JSON.parse(readFileSync(join(tool, "package-lock.json"), "utf8"));
   assert.match(source, /from "@ai-hero\/sandcastle"/u);
   assert.doesNotMatch(source, /setup-sandcastle-queue/u);
-  assert.match(dockerfile, /groupmod --new-name agent node/u);
+  assert.match(dockerfile, /^ARG AGENT_UID=1000$/mu);
+  assert.match(dockerfile, /^ARG AGENT_GID=1000$/mu);
+  assert.match(dockerfile, /groupmod --non-unique --gid "\$AGENT_GID" node/u);
   assert.match(
     dockerfile,
-    /usermod --login agent --home \/home\/agent --move-home node/u,
+    /usermod --non-unique --uid "\$AGENT_UID" --gid "\$AGENT_GID" --login agent --home \/home\/agent --move-home node/u,
   );
-  assert.match(dockerfile, /^USER agent$/mu);
+  assert.match(dockerfile, /^USER \$\{AGENT_UID\}:\$\{AGENT_GID\}$/mu);
   assert.match(dockerfile, /^WORKDIR \/home\/agent\/workspace$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["sleep", "infinity"\]$/mu);
   assert.doesNotMatch(dockerfile, /(?:groupadd|useradd).*1000/u);

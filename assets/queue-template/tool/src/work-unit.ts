@@ -33,8 +33,6 @@ export interface SandcastleBoundary {
     },
   ) => unknown;
   docker: (options: {
-    containerGid: number;
-    containerUid: number;
     env: Record<string, string>;
     imageName: string;
   }) => unknown;
@@ -143,8 +141,6 @@ export async function executeWorkUnit(
       name: `queue-${options.role}`,
       promptFile: resolve(options.promptFile),
       sandbox: boundary.docker({
-        containerGid: 1000,
-        containerUid: 1000,
         env: {},
         imageName: "sandcastle-queue-template:local",
       }),
