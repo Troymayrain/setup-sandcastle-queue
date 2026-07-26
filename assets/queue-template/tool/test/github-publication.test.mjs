@@ -10,7 +10,10 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
   const requests = [];
   const responses = [
     { object: { sha: head } },
-    { ref: "refs/heads/sandcastle/integration" },
+    {
+      object: { sha: head },
+      ref: "refs/heads/sandcastle/integration",
+    },
     { id: 71 },
     { number: 58, state: "closed" },
     [],
@@ -44,7 +47,10 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
       GITHUB_TOKEN: "github-secret",
     });
     assert.equal(await client.remoteHead("sandcastle/integration"), head);
-    await client.createIntegrationBranch("sandcastle/integration", head);
+    assert.equal(
+      await client.createIntegrationBranch("sandcastle/integration", head),
+      head,
+    );
     await client.createPublicationMarker(58, {
       afterHead: head,
       beforeHead: "b".repeat(40),
@@ -118,6 +124,46 @@ test("GitHub publication adapter uses create-only refs, immutable comments, clos
     requests[6].path,
     /actions\/workflows\/sandcastle-queue\.yml\/dispatches$/u,
   );
+});
+
+test("create-only branch rejects a GitHub response that does not prove the exact ref and HEAD", async () => {
+  const originalFetch = globalThis.fetch;
+  const invalidResponses = [
+    { object: { sha: head } },
+    { ref: "refs/heads/sandcastle/integration" },
+    {
+      object: {},
+      ref: "refs/heads/sandcastle/integration",
+    },
+    {
+      object: { sha: head },
+      ref: "refs/heads/sandcastle/other",
+    },
+    {
+      object: { sha: "b".repeat(40) },
+      ref: "refs/heads/sandcastle/integration",
+    },
+  ];
+
+  try {
+    for (const response of invalidResponses) {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify(response), {
+          headers: { "content-type": "application/json" },
+          status: 201,
+        });
+      const client = new RestGitHubHost({
+        GITHUB_REPOSITORY: "acme/widget",
+        GITHUB_TOKEN: "github-secret",
+      });
+      await assert.rejects(
+        client.createIntegrationBranch("sandcastle/integration", head),
+        /invalid created branch HEAD/u,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("Final Review marker creation and ready transition use distinct non-retried writes", async () => {

@@ -196,6 +196,7 @@ class StatefulQueueFake {
     this.events.push(["createBranch", branch, head]);
     assert.equal(this.integrationHead, null);
     this.integrationHead = head;
+    return head;
   }
 
   async createPublicationMarker(issue, marker) {

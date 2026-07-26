@@ -35,7 +35,7 @@ export interface TicketHostBoundary {
     head: string;
     title: string;
   }): Promise<DraftPullRequest>;
-  createIntegrationBranch(branch: string, head: string): Promise<void>;
+  createIntegrationBranch(branch: string, head: string): Promise<string>;
   createPublicationMarker(
     issue: number,
     marker: PublicationMarker,
@@ -129,10 +129,12 @@ async function integrationHead(
   assertObjectId(baseHead, "base HEAD");
   let head = await boundary.remoteHead(options.integrationBranch);
   if (head === null) {
-    await boundary.createIntegrationBranch(options.integrationBranch, baseHead);
-    head = await boundary.remoteHead(options.integrationBranch);
+    head = await boundary.createIntegrationBranch(
+      options.integrationBranch,
+      baseHead,
+    );
     if (head !== baseHead) {
-      throw new Error("The create-only Integration Branch is not visible at the base HEAD.");
+      throw new Error("The create-only Integration Branch was not created at the base HEAD.");
     }
   }
   assertObjectId(head, "Integration Branch HEAD");

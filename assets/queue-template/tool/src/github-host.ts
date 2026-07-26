@@ -161,11 +161,18 @@ export class RestGitHubHost implements FrontierGitHub {
     return sha;
   }
 
-  async createIntegrationBranch(branch: string, head: string): Promise<void> {
-    await this.#request("POST", `/repos/${this.#repository}/git/refs`, {
+  async createIntegrationBranch(branch: string, head: string): Promise<string> {
+    const result = await this.#request<{
+      object?: { sha?: string };
+      ref?: string;
+    }>("POST", `/repos/${this.#repository}/git/refs`, {
       ref: `refs/heads/${branch}`,
       sha: head,
     });
+    if (result.ref !== `refs/heads/${branch}` || result.object?.sha !== head) {
+      throw new Error("GitHub returned an invalid created branch HEAD.");
+    }
+    return head;
   }
 
   async createPublicationMarker(

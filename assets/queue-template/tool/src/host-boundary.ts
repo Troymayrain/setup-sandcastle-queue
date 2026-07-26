@@ -163,9 +163,9 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
     return this.#github.createDraftPullRequest(input);
   }
 
-  async createIntegrationBranch(branch: string, head: string): Promise<void> {
+  async createIntegrationBranch(branch: string, head: string): Promise<string> {
     await this.#assertBranchName(branch);
-    await this.#github.createIntegrationBranch(branch, head);
+    return this.#github.createIntegrationBranch(branch, head);
   }
 
   createPublicationMarker(

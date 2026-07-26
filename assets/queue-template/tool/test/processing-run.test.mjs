@@ -64,6 +64,7 @@ function successfulBoundary(events, overrides = {}, initialIntegrationHead = nul
       events.push(["createBranch", branch, head]);
       assert.equal(integrationHead, null);
       integrationHead = head;
+      return head;
     },
     async createPublicationMarker(issue, marker) {
       events.push(["marker", issue, marker]);
@@ -129,6 +130,11 @@ test("one bounded Processing Run creates the Integration Branch and publishes in
 
   const names = events.map(([name]) => name);
   assert.ok(names.indexOf("createBranch") < names.indexOf("checkout"));
+  assert.equal(
+    names.indexOf("checkout"),
+    names.indexOf("createBranch") + 1,
+    "the create response proves the initial HEAD without an eventually consistent reread",
+  );
   assert.deepEqual(
     events.filter(([name]) => name === "command").map(([, argv]) => argv),
     [
@@ -181,6 +187,36 @@ test("one bounded Processing Run creates the Integration Branch and publishes in
     runId: "9001",
     sessionId: "fresh-session-58",
   });
+});
+
+test("an unproven create-only branch HEAD fails before checkout or Agent work", async () => {
+  const root = mkdtempSync(join(tmpdir(), "queue-ticket-created-head-"));
+  const events = [];
+  const boundary = successfulBoundary(events, {
+    async createIntegrationBranch(branch, head) {
+      events.push(["createBranch", branch, head]);
+      return "3".repeat(40);
+    },
+  });
+
+  await assert.rejects(
+    executeProcessingRun(options(root), boundary, successfulWorkUnit(events)),
+    /was not created at the base HEAD/u,
+  );
+  assert.equal(
+    events.some(([name]) =>
+      [
+        "checkout",
+        "sandcastle",
+        "annotate",
+        "push",
+        "marker",
+        "close",
+        "createDraftPr",
+      ].includes(name),
+    ),
+    false,
+  );
 });
 
 test("invalid completion proof or project-command failure never reaches publication", async () => {
