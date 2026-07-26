@@ -84,6 +84,15 @@ test("installed Queue Template tool independently installs, typechecks, and test
     workflow,
     /SANDCASTLE_JOB_HARD_DEADLINE_MS=.*Date\.now\(\) \+ 350 \* 60_000/u,
   );
+  assert.match(workflow, /- name: Verify the Agent sandbox image/u);
+  assert.match(
+    workflow,
+    /docker run --detach[\s\S]*--user 1000:1000[\s\S]*--env HOME=\/home\/agent[\s\S]*sandcastle-queue-template:local/u,
+  );
+  assert.match(
+    workflow,
+    /docker exec[\s\S]*test -w "\$HOME"[\s\S]*git config --global --add safe\.directory \/home\/agent\/workspace/u,
+  );
   assert.doesNotMatch(workflow, /continuation_(?:count|limit)/u);
   assert.equal(
     workflow.match(/ANTHROPIC_AUTH_TOKEN: \$\{\{ secrets\./gu)?.length,
@@ -116,6 +125,7 @@ test("installed Queue Template tool independently installs, typechecks, and test
   );
   assert.match(dockerfile, /^USER agent$/mu);
   assert.match(dockerfile, /^WORKDIR \/home\/agent\/workspace$/mu);
+  assert.match(dockerfile, /^ENTRYPOINT \["sleep", "infinity"\]$/mu);
   assert.doesNotMatch(dockerfile, /(?:groupadd|useradd).*1000/u);
   assert.equal(
     lock.packages["node_modules/@ai-hero/sandcastle"].version,

@@ -84,6 +84,20 @@ jobs:
       - name: Build the Agent sandbox image
         working-directory: .sandcastle/tool
         run: docker build --tag sandcastle-queue-template:local .
+      - name: Verify the Agent sandbox image
+        run: |
+          smoke_container="sandcastle-queue-smoke-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "$smoke_container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach \
+            --name "$smoke_container" \
+            --user 1000:1000 \
+            --env HOME=/home/agent \
+            --workdir /home/agent/workspace \
+            sandcastle-queue-template:local
+          docker exec "$smoke_container" sh -c 'id && ls -ld /home/agent && test -w "$HOME" && git config --global --add safe.directory /home/agent/workspace'
       - name: Run one bounded work unit
         working-directory: .sandcastle/tool
         env:

@@ -8,3 +8,4 @@ RUN groupmod --new-name agent node \
   && usermod --login agent --home /home/agent --move-home node
 USER agent
 WORKDIR /home/agent/workspace
+ENTRYPOINT ["sleep", "infinity"]
