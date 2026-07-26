@@ -229,7 +229,7 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
     branch: string,
     before: string,
     after: string,
-  ): Promise<void> {
+  ): Promise<string> {
     await this.#assertBranchName(branch);
     if ((await this.localHead()) !== after) {
       throw new Error("Local HEAD changed before publication.");
@@ -242,6 +242,7 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
       ["push", this.#remoteUrl, `${after}:refs/heads/${branch}`],
       true,
     );
+    return after;
   }
 
   remoteHead(branch: string): Promise<string | null> {

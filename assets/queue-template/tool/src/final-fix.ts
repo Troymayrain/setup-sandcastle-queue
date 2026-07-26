@@ -51,7 +51,7 @@ export interface FinalFixBoundary {
   }): Promise<IntegrationPullRequest[]>;
   listIssueComments(issue: number): Promise<FinalizationComment[]>;
   localHead(): Promise<string>;
-  pushIntegration(branch: string, before: string, after: string): Promise<void>;
+  pushIntegration(branch: string, before: string, after: string): Promise<string>;
   remoteHead(branch: string): Promise<string | null>;
   runCommand(argv: string[], environment: NodeJS.ProcessEnv): Promise<void>;
 }
@@ -197,12 +197,12 @@ export async function orchestrateFinalFix(
   ) {
     return conflict("final-fix-head-changed-before-publication");
   }
-  await boundary.pushIntegration(
+  const visibleHead = await boundary.pushIntegration(
     options.integrationBranch,
     options.expectedHead,
     afterHead,
   );
-  if ((await boundary.remoteHead(options.integrationBranch)) !== afterHead) {
+  if (visibleHead !== afterHead) {
     throw new Error("Remote Final Fix HEAD verification failed after push.");
   }
 

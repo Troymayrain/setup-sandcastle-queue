@@ -166,9 +166,65 @@ test("reconciled publication dispatches from fresh facts without rerunning an Ag
     state.dependencies,
   );
 
-  assert.equal(result.status, "continued");
-  assert.equal(state.events.some(([name]) => name === "agent"), false);
-  assert.equal(state.events.some(([name]) => name === "dispatch"), true);
+  assert.deepEqual(result, {
+    head: newHead,
+    source: "reconciliation",
+    status: "continued",
+    ticket: 2,
+  });
+  assert.deepEqual(state.events, [
+    ["head", "sandcastle/integration"],
+    ["reconcile"],
+    ["frontier", false],
+    [
+      "dispatch",
+      {
+        inputs: {
+          expected_head: newHead,
+          operation: "continue",
+          predecessor_run_id: "9001",
+        },
+        ref: "main",
+      },
+    ],
+  ]);
+});
+
+test("manual resume of a complete publication dispatches the missing Continuation without Agent work", async () => {
+  const state = fixture({
+    frontier: [
+      { activated: [], body: "next", status: "ready", ticket: 2 },
+    ],
+  });
+
+  const result = await orchestrateProcessingRun(
+    options({ operation: "resume" }),
+    state.boundary,
+    state.dependencies,
+  );
+
+  assert.deepEqual(result, {
+    head: oldHead,
+    source: "reconciliation",
+    status: "continued",
+    ticket: 1,
+  });
+  assert.deepEqual(state.events, [
+    ["head", "sandcastle/integration"],
+    ["reconcile"],
+    ["frontier", false],
+    [
+      "dispatch",
+      {
+        inputs: {
+          expected_head: oldHead,
+          operation: "continue",
+          predecessor_run_id: "9001",
+        },
+        ref: "main",
+      },
+    ],
+  ]);
 });
 
 test("confirmed progress dispatches Final Review only when the activated Queue is empty", async () => {

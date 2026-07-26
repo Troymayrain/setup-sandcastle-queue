@@ -248,7 +248,10 @@ export async function orchestrateProcessingRun(
 
   const reconciliation = await dependencies.reconcile();
   if (reconciliation.status === "conflict") return reconciliation;
-  if (reconciliation.status === "reconciled") {
+  if (
+    reconciliation.status === "reconciled" ||
+    (reconciliation.status === "complete" && options.operation === "resume")
+  ) {
     return continueAfterProgress(options, boundary, dependencies, {
       head: reconciliation.head,
       source: "reconciliation",

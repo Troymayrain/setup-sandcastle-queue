@@ -85,6 +85,7 @@ function successfulBoundary(events, overrides = {}, initialIntegrationHead = nul
     async pushIntegration(branch, before, after) {
       events.push(["push", branch, before, after]);
       integrationHead = after;
+      return after;
     },
     async remoteHead(branch) {
       events.push(["remoteHead", branch]);
@@ -147,9 +148,9 @@ test("one bounded Processing Run creates the Integration Branch and publishes in
   assert.ok(names.lastIndexOf("command") < names.indexOf("parents"));
   assert.ok(names.indexOf("parents") < names.indexOf("annotate"));
   assert.ok(names.indexOf("annotate") < names.indexOf("push"));
-  assert.ok(names.indexOf("push") < names.lastIndexOf("remoteHead"));
-  assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("marker"));
-  assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("createDraftPr"));
+  assert.ok(names.lastIndexOf("remoteHead") < names.indexOf("push"));
+  assert.ok(names.indexOf("push") < names.indexOf("marker"));
+  assert.ok(names.indexOf("push") < names.indexOf("createDraftPr"));
   assert.ok(names.indexOf("createDraftPr") < names.indexOf("marker"));
   assert.ok(names.indexOf("marker") < names.indexOf("close"));
 
@@ -214,6 +215,28 @@ test("an unproven create-only branch HEAD fails before checkout or Agent work", 
         "close",
         "createDraftPr",
       ].includes(name),
+    ),
+    false,
+  );
+});
+
+test("an unproven pushed HEAD fails before pull-request or Ticket publication", async () => {
+  const root = mkdtempSync(join(tmpdir(), "queue-ticket-pushed-head-"));
+  const events = [];
+  const boundary = successfulBoundary(events, {
+    async pushIntegration(branch, before, after) {
+      events.push(["push", branch, before, after]);
+      return before;
+    },
+  });
+
+  await assert.rejects(
+    executeProcessingRun(options(root), boundary, successfulWorkUnit(events)),
+    /verification failed after push/u,
+  );
+  assert.equal(
+    events.some(([name]) =>
+      ["marker", "close", "createDraftPr"].includes(name),
     ),
     false,
   );

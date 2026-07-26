@@ -91,6 +91,7 @@ function fixture() {
     async pushIntegration(branch, before, after) {
       events.push(["push", branch, before, after]);
       remoteHead = after;
+      return after;
     },
     async remoteHead() {
       events.push(["head"]);
@@ -159,6 +160,28 @@ test("authorized Final Fix publishes one new HEAD and dispatches independent rer
       ref: "main",
     },
   ]);
+});
+
+test("an unproven Final Fix push stops before marker and Rereview dispatch", async () => {
+  const state = fixture();
+  state.boundary.pushIntegration = async (branch, before, after) => {
+    state.events.push(["push", branch, before, after]);
+    return before;
+  };
+
+  await assert.rejects(
+    orchestrateFinalFix(
+      options(),
+      state.boundary,
+      state.select,
+      state.runWorkUnit,
+    ),
+    /verification failed after push/u,
+  );
+  assert.equal(
+    state.events.some(([name]) => ["marker", "rereview"].includes(name)),
+    false,
+  );
 });
 
 test("stale or already-consumed Final Fix authorization cannot write", async () => {

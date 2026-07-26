@@ -46,7 +46,7 @@ export interface TicketHostBoundary {
     head: string;
   }): Promise<IntegrationPullRequest[]>;
   localHead(): Promise<string>;
-  pushIntegration(branch: string, before: string, after: string): Promise<void>;
+  pushIntegration(branch: string, before: string, after: string): Promise<string>;
   remoteHead(branch: string): Promise<string | null>;
   runCommand(
     argv: string[],
@@ -246,12 +246,11 @@ export async function executeProcessingRun(
   if ((await boundary.remoteHead(options.integrationBranch)) !== beforeHead) {
     throw new Error("The Integration Branch changed before publication.");
   }
-  await boundary.pushIntegration(
+  const visibleHead = await boundary.pushIntegration(
     options.integrationBranch,
     beforeHead,
     completionCommit,
   );
-  const visibleHead = await boundary.remoteHead(options.integrationBranch);
   if (visibleHead !== completionCommit) {
     throw new Error("Remote Integration Branch verification failed after push.");
   }

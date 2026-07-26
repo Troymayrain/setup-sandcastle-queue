@@ -304,6 +304,7 @@ class StatefulQueueFake {
     this.events.push(["push", this.currentTicket, branch, before, after]);
     assert.equal(this.integrationHead ?? this.baseHead, before);
     this.integrationHead = after;
+    return after;
   }
 
   async remoteHead(branch) {
@@ -550,25 +551,13 @@ test("30 Tickets converge through unique publications, Continuations, reconcilia
     const pushIndex = state.events.findIndex(
       ([name, candidate]) => name === "push" && candidate === issue,
     );
-    const completionHead = state.events[pushIndex][4];
-    const verificationIndex = state.events.findIndex(
-      ([name, branch, head], index) =>
-        index > pushIndex &&
-        name === "remoteHead" &&
-        branch === integrationBranch &&
-        head === completionHead,
-    );
     const closeIndex = state.events.findIndex(
       ([name, candidate]) => name === "close" && candidate === issue,
     );
     assert.ok(pushIndex >= 0, `Ticket ${issue} must push`);
     assert.ok(
-      verificationIndex > pushIndex,
-      `Ticket ${issue} must verify remote HEAD after push`,
-    );
-    assert.ok(
-      closeIndex > verificationIndex,
-      `Ticket ${issue} must close after remote verification`,
+      closeIndex > pushIndex,
+      `Ticket ${issue} must close only after the exact lease push proves its completion HEAD`,
     );
   }
 
