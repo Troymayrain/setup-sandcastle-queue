@@ -177,19 +177,22 @@ export async function orchestrateFinalFix(
     boundary.commitParents(afterHead),
     boundary.isClean(),
   ]);
-  if (
-    !objectIdPattern.test(afterHead) ||
-    afterHead === options.expectedHead ||
-    workUnit.role !== "final-fix" ||
-    workUnit.commits.length !== 1 ||
-    workUnit.commits[0] !== afterHead ||
-    parents.length !== 1 ||
-    parents[0] !== options.expectedHead ||
-    !clean
-  ) {
-    throw new Error(
-      "Final Fix must produce one clean commit parented by the reviewed HEAD.",
-    );
+  const rejectedProofs = [
+    ...(!objectIdPattern.test(afterHead) ? ["invalid-head"] : []),
+    ...(afterHead === options.expectedHead ? ["head-not-advanced"] : []),
+    ...(workUnit.role !== "final-fix" ? ["role-mismatch"] : []),
+    ...(workUnit.commits.length !== 1 ? ["commit-count"] : []),
+    ...(workUnit.commits.length === 1 && workUnit.commits[0] !== afterHead
+      ? ["commit-head-mismatch"]
+      : []),
+    ...(parents.length !== 1 ? ["parent-count"] : []),
+    ...(parents.length === 1 && parents[0] !== options.expectedHead
+      ? ["parent-mismatch"]
+      : []),
+    ...(!clean ? ["dirty-worktree"] : []),
+  ];
+  if (rejectedProofs.length > 0) {
+    throw new Error(`Final Fix commit proof failed: ${rejectedProofs.join(",")}`);
   }
   if (
     (await boundary.remoteHead(options.integrationBranch)) !==

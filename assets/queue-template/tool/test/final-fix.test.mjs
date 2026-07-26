@@ -184,6 +184,25 @@ test("an unproven Final Fix push stops before marker and Rereview dispatch", asy
   );
 });
 
+test("a Final Fix commit handoff failure identifies the rejected proof", async () => {
+  const state = fixture();
+  state.boundary.localHead = async () => reviewedHead;
+
+  await assert.rejects(
+    orchestrateFinalFix(
+      options(),
+      state.boundary,
+      state.select,
+      state.runWorkUnit,
+    ),
+    /Final Fix commit proof failed: head-not-advanced/u,
+  );
+  assert.equal(
+    state.events.some(([name]) => ["push", "marker", "rereview"].includes(name)),
+    false,
+  );
+});
+
 test("stale or already-consumed Final Fix authorization cannot write", async () => {
   const stale = fixture();
   const staleOptions = options();
