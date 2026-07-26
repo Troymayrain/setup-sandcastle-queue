@@ -51,6 +51,23 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
   const environment = {
     ANTHROPIC_AUTH_TOKEN: "provider-secret",
     ANTHROPIC_BASE_URL: "https://provider.example",
+    ANTHROPIC_DEFAULT_FABLE_MODEL: "gpt-5.6-sol",
+    ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "GPT 5.6 Sol",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.6-terra",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "GPT 5.6 Terra",
+    ANTHROPIC_DEFAULT_MODEL: "gpt-5.6-sol",
+    ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.6-sol",
+    ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "GPT 5.6 Sol",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.6-sol",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "GPT 5.6 Sol",
+    CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1",
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: "334000",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_EFFORT_LEVEL: "medium",
+    CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: "3",
+    CLAUDE_CODE_NEW_INIT: "true",
+    CLAUDE_CODE_SUBAGENT_MODEL: "gpt-5.6-sol",
+    ENABLE_TOOL_SEARCH: "false",
     GITHUB_TOKEN: "must-not-reach-agent",
   };
 
@@ -89,6 +106,23 @@ test("each role uses a fresh Sandcastle run and deletes its 0600 raw stream", as
     assert.deepEqual(options.agent.options.env, {
       ANTHROPIC_AUTH_TOKEN: "provider-secret",
       ANTHROPIC_BASE_URL: "https://provider.example",
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "gpt-5.6-sol",
+      ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: "GPT 5.6 Sol",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-5.6-terra",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "GPT 5.6 Terra",
+      ANTHROPIC_DEFAULT_MODEL: "gpt-5.6-sol",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "gpt-5.6-sol",
+      ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "GPT 5.6 Sol",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "gpt-5.6-sol",
+      ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "GPT 5.6 Sol",
+      CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1",
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: "334000",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_EFFORT_LEVEL: "medium",
+      CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: "3",
+      CLAUDE_CODE_NEW_INIT: "true",
+      CLAUDE_CODE_SUBAGENT_MODEL: "gpt-5.6-sol",
+      ENABLE_TOOL_SEARCH: "false",
     });
     assert.equal(options.agent.options.env.GITHUB_TOKEN, undefined);
     assert.deepEqual(options.sandbox.options.env, {});
@@ -141,6 +175,107 @@ test("raw stream is deleted when Sandcastle fails", async () => {
     /agent failed/u,
   );
   assert.equal(existsSync(rawPath), false);
+});
+
+async function assertInvalidAgentEnvironment(name, value) {
+  const cwd = mkdtempSync(join(tmpdir(), "queue-tool-environment-"));
+  const promptFile = join(cwd, "prompt.md");
+  writeFileSync(promptFile, "work\n");
+  let started = false;
+
+  await assert.rejects(
+    executeWorkUnit(
+      {
+        cwd,
+        environment: {
+          ANTHROPIC_AUTH_TOKEN: "secret",
+          ANTHROPIC_BASE_URL: "https://provider.example",
+          [name]: value,
+        },
+        model: "ticket-model",
+        promptFile,
+        role: "ticket",
+      },
+      {
+        claudeCode: () => {
+          started = true;
+          return {};
+        },
+        docker: () => ({}),
+        async run() {
+          started = true;
+          throw new Error("Agent must not start");
+        },
+      },
+    ),
+    new RegExp(name, "u"),
+  );
+  assert.equal(started, false);
+}
+
+test("invalid Queue Agent environment fails before Agent execution", async () => {
+  await assertInvalidAgentEnvironment(
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "unbounded",
+  );
+});
+
+test("invalid Queue Agent boolean environment fails closed", async () => {
+  await assertInvalidAgentEnvironment("ENABLE_TOOL_SEARCH", "sometimes");
+});
+
+test("invalid Queue Agent numeric environment fails closed", async () => {
+  await assertInvalidAgentEnvironment(
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
+    "0",
+  );
+});
+
+test("invalid Queue Agent model environment fails closed", async () => {
+  await assertInvalidAgentEnvironment(
+    "ANTHROPIC_DEFAULT_MODEL",
+    "gpt-5.6-sol\ninjected",
+  );
+});
+
+test("empty optional Queue Agent environment is omitted", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "queue-tool-environment-"));
+  const promptFile = join(cwd, "prompt.md");
+  writeFileSync(promptFile, "work\n");
+  let observedEnvironment;
+
+  await executeWorkUnit(
+    {
+      cwd,
+      environment: {
+        ANTHROPIC_AUTH_TOKEN: "secret",
+        ANTHROPIC_BASE_URL: "https://provider.example",
+        CLAUDE_CODE_EFFORT_LEVEL: "",
+      },
+      model: "ticket-model",
+      promptFile,
+      role: "ticket",
+    },
+    {
+      claudeCode: (_model, options) => {
+        observedEnvironment = options.env;
+        return {};
+      },
+      docker: () => ({}),
+      async run(options) {
+        writeFileSync(options.logging.path, "complete\n");
+        return {
+          branch: "sandcastle/integration",
+          commits: [{ sha: "a".repeat(40) }],
+          iterations: [{ sessionId: "session-1" }],
+          preservedWorktreePath: "/worktree/preserved",
+          stdout: "complete",
+        };
+      },
+    },
+  );
+
+  assert.equal("CLAUDE_CODE_EFFORT_LEVEL" in observedEnvironment, false);
 });
 
 test("read-only review accepts only a bounded structured verdict", async () => {
