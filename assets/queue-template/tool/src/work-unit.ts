@@ -81,6 +81,101 @@ const realBoundary: SandcastleBoundary = {
   run: (options) => run(options as unknown as RunOptions) as Promise<RunResult>,
 };
 
+const agentEnvironmentNames = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_EFFORT_LEVEL",
+  "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
+  "CLAUDE_CODE_NEW_INIT",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "ENABLE_TOOL_SEARCH",
+] as const;
+
+function validateAgentEnvironment(
+  environment: NodeJS.ProcessEnv,
+): void {
+  for (const name of [
+    "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_NEW_INIT",
+    "ENABLE_TOOL_SEARCH",
+  ] as const) {
+    const value = environment[name];
+    if (
+      value !== undefined &&
+      value.length > 0 &&
+      !["0", "1", "false", "true"].includes(value)
+    ) {
+      throw new Error(`${name} is invalid.`);
+    }
+  }
+  for (const name of [
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
+  ] as const) {
+    const value = environment[name];
+    if (
+      value !== undefined &&
+      value.length > 0 &&
+      (!/^[1-9]\d*$/u.test(value) || !Number.isSafeInteger(Number(value)))
+    ) {
+      throw new Error(`${name} is invalid.`);
+    }
+  }
+  for (const name of [
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+  ] as const) {
+    const value = environment[name];
+    if (
+      value !== undefined &&
+      value.length > 0 &&
+      (value.length > 256 || /\s/u.test(value))
+    ) {
+      throw new Error(`${name} is invalid.`);
+    }
+  }
+  for (const name of [
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+  ] as const) {
+    const value = environment[name];
+    if (
+      value !== undefined &&
+      value.length > 0 &&
+      (value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value))
+    ) {
+      throw new Error(`${name} is invalid.`);
+    }
+  }
+  const effort = environment.CLAUDE_CODE_EFFORT_LEVEL;
+  if (
+    effort !== undefined &&
+    effort.length > 0 &&
+    !["low", "medium", "high", "max"].includes(effort)
+  ) {
+    throw new Error("CLAUDE_CODE_EFFORT_LEVEL is invalid.");
+  }
+}
+
 function providerEnvironment(
   environment: NodeJS.ProcessEnv,
 ): Record<string, string> {
@@ -91,10 +186,13 @@ function providerEnvironment(
       "ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are required at the Agent execution boundary.",
     );
   }
-  return {
-    ANTHROPIC_AUTH_TOKEN: token,
-    ANTHROPIC_BASE_URL: baseUrl,
-  };
+  validateAgentEnvironment(environment);
+  return Object.fromEntries(
+    agentEnvironmentNames.flatMap((name) => {
+      const value = environment[name];
+      return value === undefined || value.length === 0 ? [] : [[name, value]];
+    }),
+  );
 }
 
 function sessionId(result: RunResultLike): string {

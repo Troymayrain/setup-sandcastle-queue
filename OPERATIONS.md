@@ -122,32 +122,21 @@ installer-managed files 包括 workflow、runtime skill snapshots、skill lock�
 | `execution` | job、processing、ticket 和 continuation 限制 | job 不超过 350 分钟，每 run 最多三票 |
 | `audit` | 短期 artifact retention | 1 到 90 天 |
 
-`networkHosts` 只接受精确 public DNS hostname，拒绝 wildcard、URL、IP、CIDR、localhost、host network 和 Docker socket。provider Base URL 使用 GitHub Environment variable `ANTHROPIC_BASE_URL`，长期 token 使用 Environment secret `ANTHROPIC_AUTH_TOKEN`。
+`networkHosts` 只接受精确 public DNS hostname，拒绝 wildcard、URL、IP、CIDR、localhost、host network 和 Docker socket。长期 token 使用 repository-level Actions secret `ANTHROPIC_AUTH_TOKEN`；provider Base URL 使用 repository-level Actions variable `ANTHROPIC_BASE_URL`。
+
+Queue workflow 还会从 repository-level Actions variables 读取并只向 Claude Code Agent 透传以下可选配置：
+
+- model：`ANTHROPIC_DEFAULT_MODEL`、`ANTHROPIC_DEFAULT_FABLE_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、`CLAUDE_CODE_SUBAGENT_MODEL`
+- model display name：`ANTHROPIC_DEFAULT_FABLE_MODEL_NAME`、`ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME`、`ANTHROPIC_DEFAULT_OPUS_MODEL_NAME`、`ANTHROPIC_DEFAULT_SONNET_MODEL_NAME`
+- Claude Code runtime：`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`、`CLAUDE_CODE_AUTO_COMPACT_WINDOW`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`、`CLAUDE_CODE_EFFORT_LEVEL`、`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`、`CLAUDE_CODE_NEW_INIT`、`ENABLE_TOOL_SEARCH`
+
+`GITHUB_TOKEN` 仅供 Host 使用，不进入 Agent 或 sandbox。布尔配置只接受 `0`、`1`、`false`、`true`；数值配置必须是正的安全整数；effort 只接受 `low`、`medium`、`high`、`max`。
 
 ## GitHub setup
 
-先以只读方式预览 labels、Environment 和高权限设置：
+在仓库的 Actions secrets and variables 页面创建前述 repository-level Secret 与 Variables，并创建 `ready-for-agent`、`sandcastle` 两个 labels。不要为这些配置选择 GitHub Environment；workflow 直接读取 repository scope。
 
-```bash
-GITHUB_TOKEN=... \
-ANTHROPIC_BASE_URL=https://provider.example.com \
-ANTHROPIC_AUTH_TOKEN=... \
-node /path/to/setup-sandcastle-queue/dist/cli.js configure-github \
-  --config .sandcastle/config.json
-```
-
-输出会区分自动可管理 resources 与人工事项。确认创建或复用 labels、`sandcastle` Environment、provider variable 和 provider secret 后，显式列出全部四类：
-
-```bash
-GITHUB_TOKEN=... \
-ANTHROPIC_BASE_URL=https://provider.example.com \
-ANTHROPIC_AUTH_TOKEN=... \
-node /path/to/setup-sandcastle-queue/dist/cli.js configure-github \
-  --config .sandcastle/config.json \
-  --confirm-resources labels,environment,provider-variable,provider-secret
-```
-
-工具不会创建 PAT、GitHub App、branch protection、ruleset、organization policy、Actions 高权限设置或 Environment required reviewers。维护者必须按 preview diagnostics 在 GitHub UI 中处理这些事项。
+安装工具不会创建或更新 token、PAT、GitHub App、branch protection、ruleset、organization policy 或 Actions 高权限设置。维护者必须在 GitHub UI 中完成这些事项，并在提交 Secret 前确认它没有在聊天、日志或仓库中暴露。
 
 ## Local doctor 与 remote doctor
 

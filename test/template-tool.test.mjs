@@ -111,6 +111,31 @@ test("installed Queue Template tool independently installs, typechecks, and test
     workflow.match(/ANTHROPIC_BASE_URL: \$\{\{ vars\./gu)?.length,
     1,
   );
+  for (const name of [
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY",
+    "CLAUDE_CODE_NEW_INIT",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "ENABLE_TOOL_SEARCH",
+  ]) {
+    assert.equal(
+      workflow.match(new RegExp(`${name}: \\$\\{\\{ vars\\.${name} \\}\\}`, "gu"))?.length,
+      1,
+      `${name} must be sourced exactly once from GitHub repository variables`,
+    );
+  }
   assert.equal(
     workflow.match(/GITHUB_TOKEN: \$\{\{ github\.token \}\}/gu)?.length,
     1,
