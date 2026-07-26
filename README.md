@@ -1,57 +1,38 @@
 # setup-sandcastle-queue
 
-`setup-sandcastle-queue` 把 Sandcastle Queue 的安装、runtime 检测、GitHub 配置、安全边界和运维检查收进同一个版本化工具。它不会替目标仓库执行 `stash`、`reset`、`commit` 或 `push`。安装文件先形成完整 patch，维护者确认同一个 `planHash` 后才会写入。
+`setup-sandcastle-queue` 是一个单一用途的 npm CLI：把可审阅、可修改的 Sandcastle Queue Template 安装到目标 GitHub 仓库。Agent 执行、sandbox、worktree 与 provider runtime 由上游 `@ai-hero/sandcastle` 提供；本包不再提供第二套 runtime、兼容 lifecycle 或 library API。
 
-> 当前源码是尚未发布的 `1.0.0` release candidate。installer、runtime adapters、`workflow-host` dispatcher、credentialless CI 和 release-gate 验证器已有自动化覆盖。远端 Actions Batch、live E2E、dogfood 和正式发布尚无成功证据，不要把本地合同测试记为这些 gate 已通过。
+## 支持边界
 
-完整配置、安全模型、状态语义和恢复步骤见 [维护者手册](./OPERATIONS.md)。
+- `sandcastle-queue init --config <path>`：预览并安装 Project-controlled Assets，可选配置 repository labels、Secret 与 Variables。
+- `sandcastle-queue doctor [--offline] [--json]`：检查本地安装；非 offline 模式还检查 GitHub resources 是否存在。
+- Queue Template：生成 `.github/workflows/sandcastle-queue.yml`、`.sandcastle/config.json`、prompts 与独立 Queue tool project。
 
-## Quickstart
+不支持 adopt、upgrade、rollback、uninstall、managed manifest、runtime detection、credential broker、remote doctor、Batch checkpoint 或旧 library exports。安装后的资产归目标项目控制；setup 不持续覆盖或迁移它们。
 
-需要 Node.js `22.22.2`、npm `10.9.7`、Git 和一个带 GitHub.com `origin` 的目标仓库。先在本仓库构建 CLI：
+## 使用
+
+需要 Node.js `22.x`、npm、Git、GitHub CLI，以及一个带 GitHub.com `origin` 的目标仓库。
 
 ```bash
 npm ci --ignore-scripts
 npm run build
-node dist/cli.js version
+node dist/cli.js init --config /path/to/queue-config.json
+node dist/cli.js doctor --offline --json
 ```
 
-进入目标仓库后，用构建产物的绝对路径执行命令。下面以 `/path/to/setup-sandcastle-queue/dist/cli.js` 表示该路径。
-
-```bash
-node /path/to/setup-sandcastle-queue/dist/cli.js propose
-node /path/to/setup-sandcastle-queue/dist/cli.js validate-config \
-  --config /tmp/sandcastle-config.json
-node /path/to/setup-sandcastle-queue/dist/cli.js plan \
-  --config /tmp/sandcastle-config.json \
-  > /tmp/sandcastle-plan-output.json
-jq '.result' /tmp/sandcastle-plan-output.json > /tmp/sandcastle-plan.json
-```
-
-检查 `/tmp/sandcastle-plan-output.json` 中的完整 `patch`、`installationState` 和 `planHash`。确认后再应用同一份 plan：
-
-```bash
-node /path/to/setup-sandcastle-queue/dist/cli.js install \
-  --plan /tmp/sandcastle-plan.json \
-  --confirm "$(jq -r '.planHash' /tmp/sandcastle-plan.json)"
-node /path/to/setup-sandcastle-queue/dist/cli.js doctor --offline
-```
-
-`doctor --offline` 不需要 GitHub 或 provider 凭据。GitHub resources 仍需单独预览、逐类确认和人工复核，详见维护者手册。
-
-## 安装入口
-
-仓库根同时是 setup skill package。支持 Agent skill 的环境应通过 `SKILL.md` 调用 `node scripts/setup.mjs`，npm CLI 和 setup skill 都委托给同一个 installer core。`1.0.0` workflow 已要求 credentialless、live E2E、legacy dogfood 与三票 Batch dogfood 四组前置证据，并在发布后复验 npm、GitHub Release、skill snapshot 与 GHCR image；当前没有真实成功证据或发布结果，请勿假设任何 registry 中已有可用的 `1.0.0`。
+`init` 会先显示完整 patch，只有输入 `yes` 才写入项目资产。若提供 provider credentials，它还会单独预览 GitHub resources，并再次要求确认。完整配置与运行说明见 [OPERATIONS.md](./OPERATIONS.md)。
 
 ## 开发验证
 
 ```bash
 npm run typecheck
 npm test
+npm pack --dry-run --ignore-scripts
 ```
 
-普通 PR CI 使用九类无凭据 fixture、本地 GitHub 与 Anthropic-compatible contract servers，并在候选容器中对只读 fixture 运行 offline doctor。Python 与 Java 的真实 live E2E 只允许 maintainer 手动触发，且成功必须来自专用 fixture repositories 的候选 commit 绑定证据。legacy lifecycle 与三票 Batch dogfood 同样是 manual-only gates；它们要求真实项目返回 release、repository state 与 candidate 绑定的脱敏证据。当前没有成功的远端 live E2E 或 dogfood run。
+测试覆盖 CLI、GitHub resource 边界、Node/Python/Mixed 安装合同、Queue Template tool，以及 npm tarball 禁止面。
 
 ## License
 
-项目使用 MIT License。第三方 runtime skill snapshots 的来源、commit、hash 与 notices 记录在 `THIRD_PARTY_NOTICES.md` 和安装产物中。
+MIT

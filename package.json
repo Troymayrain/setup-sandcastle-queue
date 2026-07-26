@@ -1,34 +1,24 @@
 {
   "name": "setup-sandcastle-queue",
   "version": "1.0.0",
-  "description": "Deterministic installer and runtime for a Sandcastle GitHub Issues agent queue.",
+  "description": "Install a project-controlled Sandcastle GitHub Issues queue.",
   "type": "module",
   "bin": {
     "sandcastle-queue": "./dist/cli.js"
   },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "files": [
-    "Dockerfile",
     "LICENSE",
     "OPERATIONS.md",
-    "RELEASE_NOTES.md",
-    "SKILL.md",
-    "THIRD_PARTY_NOTICES.md",
-    "agents",
-    "assets",
-    "control-plane/package-lock.json",
-    "control-plane/package.json",
-    "control-plane/runtime-package.json",
-    "dist",
-    "release-manifest.json",
-    "schema",
-    "scripts",
-    "vendor"
+    "README.md",
+    "assets/queue-template/tool",
+    "!assets/queue-template/tool/dist",
+    "!assets/queue-template/tool/node_modules",
+    "dist/canonical-json.js",
+    "dist/cli.js",
+    "dist/hash.js",
+    "dist/mvp",
+    "dist/version.js",
+    "schema/mvp-config.schema.json"
   ],
   "engines": {
     "node": ">=22 <23"
@@ -36,13 +26,10 @@
   "packageManager": "npm@10.9.7",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test:contracts": "node scripts/run-contract-ci.mjs",
-    "test:fixture": "node scripts/run-credentialless-fixture.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@actions/artifact": "6.2.1",
     "ajv": "8.20.0",
     "libsodium-wrappers": "0.8.4"
   },
