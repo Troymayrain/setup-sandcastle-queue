@@ -211,6 +211,9 @@ export class NodeIntegrationHost implements TicketHostBoundary, FinalFixBoundary
         cleanup.push("rejected");
       }
     }
+    if (operationFailure && cleanup.includes("rejected")) {
+      throw new Error("Final Fix adoption failed and cleanup was incomplete.");
+    }
     if (operationFailure) throw operationFailure;
     if (cleanup.includes("rejected")) {
       throw new Error("Host could not clean up the adopted Final Fix worktree.");

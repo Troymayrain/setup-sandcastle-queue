@@ -109,6 +109,23 @@ test("Host rejects an unregistered repository inside the worktree directory", as
     /registered Final Fix worktree/u,
   );
   assert.equal(git(repository, ["rev-parse", "HEAD"]), expectedHead);
+
+  const outsideRoot = mkdtempSync(join(tmpdir(), "queue-final-fix-outside-"));
+  t.after(() => rmSync(outsideRoot, { force: true, recursive: true }));
+  const outsidePath = join(outsideRoot, "candidate");
+  const outsideBranch = "sandcastle/queue-final-fix/outside";
+  git(repository, ["clone", "--no-hardlinks", repository, outsidePath]);
+  git(outsidePath, ["checkout", "-b", outsideBranch, expectedHead]);
+  writeFileSync(join(outsidePath, "app.txt"), "outside\n");
+  await assert.rejects(
+    host.adoptFinalFixChanges({
+      branch: outsideBranch,
+      expectedHead,
+      preservedWorktreePath: outsidePath,
+    }),
+    /outside the Queue boundary/u,
+  );
+  assert.equal(git(repository, ["rev-parse", "HEAD"]), expectedHead);
 });
 
 test("Host cleans up a registered Final Fix worktree rejected as clean", async (t) => {
@@ -148,6 +165,24 @@ test("Host cleans up a registered Final Fix worktree rejected as clean", async (
     { GITHUB_REPOSITORY: "acme/widget", GITHUB_TOKEN: "github-token" },
     {},
   );
+
+  await assert.rejects(
+    host.adoptFinalFixChanges({
+      branch,
+      expectedHead: "0".repeat(40),
+      preservedWorktreePath,
+    }),
+    /registered Final Fix worktree/u,
+  );
+  await assert.rejects(
+    host.adoptFinalFixChanges({
+      branch: "sandcastle/queue-final-fix/wrong",
+      expectedHead,
+      preservedWorktreePath,
+    }),
+    /registered Final Fix worktree/u,
+  );
+  assert.equal(existsSync(preservedWorktreePath), true);
 
   await assert.rejects(
     host.adoptFinalFixChanges({ branch, expectedHead, preservedWorktreePath }),
