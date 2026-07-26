@@ -55,7 +55,7 @@ export interface ProcessingRunDependencies {
   }>;
   finalize(): Promise<NextFinalOperation>;
   reconcile(): Promise<ReconciliationResult>;
-  select(activate: boolean): Promise<FrontierResult>;
+  select(activate: boolean, completedTicket?: number): Promise<FrontierResult>;
 }
 
 export type WorkflowHostResult =
@@ -174,7 +174,7 @@ async function continueAfterProgress(
   if (!objectIdPattern.test(progress.head)) {
     return conflict("progress-head-invalid");
   }
-  const frontier = await dependencies.select(false);
+  const frontier = await dependencies.select(false, progress.ticket);
   if (frontier.status === "conflict") return frontier;
   if (frontier.status === "waiting") {
     if (frontier.reason === "empty") {

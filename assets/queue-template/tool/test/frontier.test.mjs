@@ -130,6 +130,74 @@ test("assigned or native-blocked owned Tickets wait and contradictory facts fail
   );
 });
 
+test("fresh Frontier ignores only the just-completed Ticket stale list snapshot", async () => {
+  function staleClient() {
+    const client = fakeClient([
+      issue(1, {
+        labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
+      }),
+      issue(2, {
+        labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
+      }),
+    ]);
+    client.getIssue = async (number) => {
+      client.calls.push(["getIssue", number]);
+      const value = structuredClone(client.issues.get(number));
+      if (number === 1) value.state = "closed";
+      return value;
+    };
+    return client;
+  }
+
+  const completed = staleClient();
+  const result = await activateAndSelectFrontier(
+    completed,
+    { ownership: "sandcastle", ready: "ready-for-agent" },
+    false,
+    1,
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.ticket, 2);
+  assert.equal(
+    completed.calls.some(
+      ([name, number]) => name === "getIssue" && number === 1,
+    ),
+    true,
+  );
+
+  const reopened = fakeClient([
+    issue(1, {
+      labels: [{ name: "sandcastle" }, { name: "ready-for-agent" }],
+    }),
+  ]);
+  assert.deepEqual(
+    await activateAndSelectFrontier(
+      reopened,
+      { ownership: "sandcastle", ready: "ready-for-agent" },
+      false,
+      1,
+    ),
+    {
+      activated: [],
+      reason: "contradictory-issue-1",
+      status: "conflict",
+    },
+  );
+
+  const unrelated = staleClient();
+  const conflict = await activateAndSelectFrontier(
+    unrelated,
+    { ownership: "sandcastle", ready: "ready-for-agent" },
+    false,
+    99,
+  );
+  assert.deepEqual(conflict, {
+    activated: [],
+    reason: "contradictory-issue-1",
+    status: "conflict",
+  });
+});
+
 test("an empty manual activation waits without any branch or pull-request boundary", async () => {
   const client = fakeClient([]);
   const result = await activateAndSelectFrontier(

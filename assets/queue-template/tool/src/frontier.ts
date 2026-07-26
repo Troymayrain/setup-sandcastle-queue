@@ -73,6 +73,7 @@ export async function activateAndSelectFrontier(
   client: FrontierGitHub,
   labels: { ownership: string; ready: string },
   activate: boolean,
+  completedTicket?: number,
 ): Promise<FrontierResult> {
   const listed = await allOpenIssues(client);
   if (new Set(listed.map(({ number }) => number)).size !== listed.length) {
@@ -116,6 +117,16 @@ export async function activateAndSelectFrontier(
   const executable: GitHubIssue[] = [];
   for (const snapshot of refreshedList.sort((left, right) => left.number - right.number)) {
     const issue = await client.getIssue(snapshot.number);
+    if (snapshot.number === completedTicket) {
+      if (issue.number !== snapshot.number || issue.state !== "closed") {
+        return {
+          activated,
+          reason: `contradictory-issue-${snapshot.number}`,
+          status: "conflict",
+        };
+      }
+      continue;
+    }
     if (issue.number !== snapshot.number || !Array.isArray(issue.labels)) {
       return {
         activated,

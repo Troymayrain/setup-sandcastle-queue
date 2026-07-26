@@ -58,8 +58,8 @@ function fixture({
         events.push(["reconcile"]);
         return reconciliation;
       },
-      async select(activate) {
-        events.push(["frontier", activate]);
+      async select(activate, completedTicket) {
+        events.push(["frontier", activate, completedTicket]);
         return selections.shift() ?? {
           activated: [],
           reason: "empty",
@@ -175,7 +175,7 @@ test("reconciled publication dispatches from fresh facts without rerunning an Ag
   assert.deepEqual(state.events, [
     ["head", "sandcastle/integration"],
     ["reconcile"],
-    ["frontier", false],
+    ["frontier", false, 2],
     [
       "dispatch",
       {
@@ -212,7 +212,7 @@ test("manual resume of a complete publication dispatches the missing Continuatio
   assert.deepEqual(state.events, [
     ["head", "sandcastle/integration"],
     ["reconcile"],
-    ["frontier", false],
+    ["frontier", false, 1],
     [
       "dispatch",
       {

@@ -118,6 +118,7 @@ function selectFrontier(
   request: WorkflowHostRequest,
   github: FrontierGitHub,
   activate: boolean,
+  completedTicket?: number,
 ) {
   return activateAndSelectFrontier(
     github,
@@ -126,6 +127,7 @@ function selectFrontier(
       ready: request.config.queue.readyLabel,
     },
     activate,
+    completedTicket,
   );
 }
 
@@ -272,8 +274,8 @@ export async function executeWorkflowHostOperation(
           },
           bindings.github,
         ),
-      select: (activate) =>
-        selectFrontier(request, bindings.github, activate),
+      select: (activate, completedTicket) =>
+        selectFrontier(request, bindings.github, activate, completedTicket),
     },
   );
 }
