@@ -1,0 +1,251 @@
+name: Publish npm CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full commit SHA on main to publish
+        required: true
+        type: string
+      release_tag:
+        description: SemVer tag matching v<package version>
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  candidate:
+    name: Build and verify the candidate tarball
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      candidate_sha: ${{ steps.bind.outputs.candidate_sha }}
+      release_tag: ${{ steps.bind.outputs.release_tag }}
+      version: ${{ steps.bind.outputs.version }}
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha }}
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - name: Bind version, tag, and main to one candidate
+        id: bind
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          actual_sha="$(git rev-parse HEAD)"
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          version="$(node -p "require('./package.json').version")"
+          node scripts/release-guard.mjs candidate \
+            --candidate "$CANDIDATE_SHA" \
+            --actual "$actual_sha" \
+            --main "$main_sha"
+          test "$RELEASE_TAG" = "v$version"
+          {
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "release_tag=$RELEASE_TAG"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - name: Create and smoke the unique candidate tarball
+        id: pack
+        env:
+          CANDIDATE_SHA: ${{ steps.bind.outputs.candidate_sha }}
+          RELEASE_TAG: ${{ steps.bind.outputs.release_tag }}
+          VERSION: ${{ steps.bind.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/npm-candidate"
+          npm pack --json --ignore-scripts \
+            --pack-destination "$RUNNER_TEMP/npm-candidate" \
+            > "$RUNNER_TEMP/npm-pack.json"
+          tarball="$(jq -r '.[0].filename' "$RUNNER_TEMP/npm-pack.json")"
+          integrity="$(jq -r '.[0].integrity' "$RUNNER_TEMP/npm-pack.json")"
+          shasum="$(jq -r '.[0].shasum' "$RUNNER_TEMP/npm-pack.json")"
+          node test/release-smoke.mjs \
+            --package "$RUNNER_TEMP/npm-candidate/$tarball" \
+            --expected-version "$VERSION"
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg integrity "$integrity" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg shasum "$shasum" \
+            --arg tarball "$tarball" \
+            --arg version "$VERSION" \
+            '{
+              candidateSha: $candidateSha,
+              integrity: $integrity,
+              releaseTag: $releaseTag,
+              repository: $repository,
+              runAttempt: $runAttempt,
+              runId: $runId,
+              schemaVersion: 1,
+              shasum: $shasum,
+              tarball: $tarball,
+              version: $version
+            }' > "$RUNNER_TEMP/npm-candidate/evidence.json"
+      - name: Preserve the candidate tarball and bound evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npm-candidate-${{ steps.bind.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/npm-candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish and verify the exact npm version
+    needs: candidate
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.candidate.outputs.candidate_sha }}
+      - name: Use the pinned Node.js runtime and npm registry
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+          registry-url: https://registry.npmjs.org
+      - name: Download the unique candidate tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npm-candidate-${{ needs.candidate.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/npm-candidate
+      - name: Verify downloaded candidate evidence
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.candidate_sha }}
+          RELEASE_TAG: ${{ needs.candidate.outputs.release_tag }}
+          VERSION: ${{ needs.candidate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/npm-candidate/evidence.json"
+          jq -e \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg version "$VERSION" \
+            '.schemaVersion == 1 and
+             .candidateSha == $candidateSha and
+             .releaseTag == $releaseTag and
+             .version == $version' \
+            "$evidence" >/dev/null
+          tarball="$(jq -r '.tarball' "$evidence")"
+          test "$(sha1sum "$RUNNER_TEMP/npm-candidate/$tarball" | cut -d' ' -f1)" = \
+            "$(jq -r '.shasum' "$evidence")"
+      - name: Preflight npm version and release tag
+        id: preflight
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.candidate_sha }}
+          RELEASE_TAG: ${{ needs.candidate.outputs.release_tag }}
+          VERSION: ${{ needs.candidate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/npm-candidate/evidence.json"
+          expected_integrity="$(jq -r '.integrity' "$evidence")"
+          published_integrity="$(npm view "setup-sandcastle-queue@$VERSION" dist.integrity --json 2>/dev/null | tr -d '"' || true)"
+          publication="$(node scripts/release-guard.mjs registry \
+            --expected "$expected_integrity" \
+            --published "$published_integrity")"
+          echo "publication=$publication" >> "$GITHUB_OUTPUT"
+          existing_tag="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | cut -f1)"
+          node scripts/release-guard.mjs tag \
+            --candidate "$CANDIDATE_SHA" \
+            --existing "$existing_tag"
+      - name: Publish the exact candidate tarball
+        if: steps.preflight.outputs.publication == 'absent'
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.candidate_sha }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/npm-candidate/evidence.json"
+          tarball="$(jq -r '.tarball' "$evidence")"
+          actual_sha="$(git rev-parse HEAD)"
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          node scripts/release-guard.mjs candidate \
+            --candidate "$CANDIDATE_SHA" \
+            --actual "$actual_sha" \
+            --main "$main_sha"
+          npm publish "$RUNNER_TEMP/npm-candidate/$tarball" --access public
+      - name: Query the registry and repeat exact-version smoke
+        env:
+          VERSION: ${{ needs.candidate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_integrity="$(jq -r '.integrity' "$RUNNER_TEMP/npm-candidate/evidence.json")"
+          published_integrity=""
+          for _ in {1..12}; do
+            published_integrity="$(npm view "setup-sandcastle-queue@$VERSION" dist.integrity --json 2>/dev/null | tr -d '"' || true)"
+            [[ "$published_integrity" = "$expected_integrity" ]] && break
+            sleep 10
+          done
+          test "$published_integrity" = "$expected_integrity"
+          node test/release-smoke.mjs \
+            --package "setup-sandcastle-queue@$VERSION" \
+            --expected-version "$VERSION"
+  tag:
+    name: Create the candidate-bound SemVer tag
+    needs:
+      - candidate
+      - publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.candidate.outputs.candidate_sha }}
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.2
+      - name: Create or verify the candidate-bound SemVer tag
+        env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.candidate.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          node scripts/release-guard.mjs checkout \
+            --candidate "$CANDIDATE_SHA" \
+            --actual "$actual_sha"
+          existing="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | cut -f1)"
+          tag_state="$(node scripts/release-guard.mjs tag \
+            --candidate "$CANDIDATE_SHA" \
+            --existing "$existing")"
+          if [[ "$tag_state" = "create" ]]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$CANDIDATE_SHA" >/dev/null
+          fi
