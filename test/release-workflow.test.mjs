@@ -24,7 +24,8 @@ test("npm publication is manual, candidate-bound, and single-artifact", () => {
   assert.equal(workflow.match(/NODE_AUTH_TOKEN:/gu)?.length, 1);
   assert.equal(workflow.match(/secrets\.NPM_TOKEN/gu)?.length, 1);
   assert.equal(workflow.match(/test\/release-smoke\.mjs/gu)?.length, 2);
-  assert.match(workflow, /npm view "setup-sandcastle-queue@\$VERSION" dist\.integrity/u);
+  assert.equal(workflow.match(/release-guard\.mjs registry-read/gu)?.length, 2);
+  assert.doesNotMatch(workflow, /npm view/u);
   assert.doesNotMatch(workflow, /ghcr\.io|docker build|gh release|skill snapshot/iu);
 });
 

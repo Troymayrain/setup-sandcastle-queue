@@ -49,7 +49,32 @@ export function classifyTag(candidate, existing) {
   return "exact";
 }
 
-function main() {
+export async function readRegistryIntegrity(
+  packageName,
+  version,
+  fetchImplementation = globalThis.fetch,
+  signal = AbortSignal.timeout(10_000),
+) {
+  const url = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
+  const response = await fetchImplementation(url, {
+    headers: { accept: "application/json" },
+    signal,
+  });
+  if (response.status === 404) {
+    return "";
+  }
+  if (!response.ok) {
+    throw new Error(`npm registry query failed with HTTP ${response.status}`);
+  }
+  const metadata = await response.json();
+  const integrity = metadata?.dist?.integrity;
+  if (typeof integrity !== "string" || integrity === "") {
+    throw new Error("npm registry response is missing dist.integrity");
+  }
+  return integrity;
+}
+
+async function main() {
   const command = process.argv[2];
   if (command === "candidate") {
     assertCandidateIsCurrentMain(
@@ -69,6 +94,12 @@ function main() {
     );
     return;
   }
+  if (command === "registry-read") {
+    process.stdout.write(
+      `${await readRegistryIntegrity(required("--package"), required("--version"))}\n`,
+    );
+    return;
+  }
   if (command === "tag") {
     process.stdout.write(
       `${classifyTag(required("--candidate"), required("--existing"))}\n`,
@@ -76,15 +107,13 @@ function main() {
     return;
   }
   throw new Error(
-    "Usage: release-guard.mjs <candidate|checkout|registry|tag> [options]",
+    "Usage: release-guard.mjs <candidate|checkout|registry|registry-read|tag> [options]",
   );
 }
 
 if (process.argv[1]?.endsWith("release-guard.mjs")) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }
