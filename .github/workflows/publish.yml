@@ -166,7 +166,9 @@ jobs:
           set -euo pipefail
           evidence="$RUNNER_TEMP/npm-candidate/evidence.json"
           expected_integrity="$(jq -r '.integrity' "$evidence")"
-          published_integrity="$(npm view "setup-sandcastle-queue@$VERSION" dist.integrity --json 2>/dev/null | tr -d '"' || true)"
+          published_integrity="$(node scripts/release-guard.mjs registry-read \
+            --package setup-sandcastle-queue \
+            --version "$VERSION")"
           publication="$(node scripts/release-guard.mjs registry \
             --expected "$expected_integrity" \
             --published "$published_integrity")"
@@ -201,7 +203,9 @@ jobs:
           expected_integrity="$(jq -r '.integrity' "$RUNNER_TEMP/npm-candidate/evidence.json")"
           published_integrity=""
           for _ in {1..12}; do
-            published_integrity="$(npm view "setup-sandcastle-queue@$VERSION" dist.integrity --json 2>/dev/null | tr -d '"' || true)"
+            published_integrity="$(node scripts/release-guard.mjs registry-read \
+              --package setup-sandcastle-queue \
+              --version "$VERSION")"
             [[ "$published_integrity" = "$expected_integrity" ]] && break
             sleep 10
           done
