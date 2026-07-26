@@ -105,3 +105,15 @@ node /path/to/setup-sandcastle-queue/dist/cli.js doctor --offline --json
 - completion commit、Issue marker、closure 与 Integration PR 共同构成可恢复的远端 publication facts；不使用本地 checkpoint 或长期 audit ledger 作为恢复状态。
 - 冲突、未知 publication、stale HEAD、超时或第二次自动修复需求均 fail closed，交回人工检查。
 - Setup 不会替目标项目执行 merge，也不会持续管理已安装文件。
+
+## npm 发布
+
+唯一发布制品是 npm CLI tarball。`.github/workflows/publish.yml` 只接受维护者手动 dispatch，并要求：
+
+- `candidate_sha` 是当前 `main` 的完整 40 位 commit SHA；
+- `release_tag` 精确等于 `v<package.json version>`；
+- `npm` GitHub Environment 中配置 `NPM_TOKEN` Secret，并建议设置 required reviewers。
+
+workflow 在无发布凭据的 Node.js `22.22.2` job 中运行 typecheck、完整 tests、生成唯一 tarball，并在干净临时项目中验证 `--version`、`--help`、fresh init 与 offline doctor。tarball 和 candidate-bound evidence 通过短期 Actions artifact 交给受保护的 publish job。
+
+`NPM_TOKEN` 只注入 `npm publish` step。发布后 workflow 不带 npm credential 查询 registry、比较 tarball integrity、安装 `setup-sandcastle-queue@<exact version>` 并重复 user-path smoke。workflow 不构建 GHCR image、不创建 skill snapshot，也不要求 GitHub Release。

@@ -33,6 +33,8 @@ npm pack --dry-run --ignore-scripts
 
 测试覆盖 CLI、GitHub resource 边界、Node/Python/Mixed 安装合同、Queue Template tool，以及 npm tarball 禁止面。
 
+发布只通过维护者手动触发的 `Publish npm CLI` workflow 进行。它绑定当前 `main` candidate、`v<package version>` tag 与唯一 tarball，在 Node.js 22 中完成发布前及 registry 精确版本回读 smoke；详见 [OPERATIONS.md](./OPERATIONS.md#npm-发布)。
+
 ## License
 
 MIT
