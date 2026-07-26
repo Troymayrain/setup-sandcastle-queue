@@ -124,6 +124,10 @@ test("installed Queue Template tool independently installs, typechecks, and test
 
   const source = readFileSync(join(tool, "src", "work-unit.ts"), "utf8");
   const dockerfile = readFileSync(join(tool, "Dockerfile"), "utf8");
+  const ticketPrompt = readFileSync(
+    join(repository, ".sandcastle", "prompts", "ticket.md"),
+    "utf8",
+  );
   const lock = JSON.parse(readFileSync(join(tool, "package-lock.json"), "utf8"));
   assert.match(source, /from "@ai-hero\/sandcastle"/u);
   assert.doesNotMatch(source, /setup-sandcastle-queue/u);
@@ -138,6 +142,11 @@ test("installed Queue Template tool independently installs, typechecks, and test
   assert.match(dockerfile, /^WORKDIR \/home\/agent\/workspace$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["sleep", "infinity"\]$/mu);
   assert.doesNotMatch(dockerfile, /(?:groupadd|useradd).*1000/u);
+  assert.match(ticketPrompt, /创建恰好一个以当前 HEAD 为父提交的 commit/u);
+  assert.match(ticketPrompt, /保持 worktree clean/u);
+  assert.match(ticketPrompt, /不要添加 `Sandcastle-\*` trailers/u);
+  assert.match(ticketPrompt, /不要 push/u);
+  assert.match(ticketPrompt, /不要修改 GitHub Issues 或 pull requests/u);
   assert.equal(
     lock.packages["node_modules/@ai-hero/sandcastle"].version,
     "0.12.0",
